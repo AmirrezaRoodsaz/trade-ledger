@@ -25,7 +25,11 @@ def ttwror(values: list[tuple[date, Decimal]], flows: list[tuple[date, Decimal]]
     Sub-periods split at the flow dates. A value on a flow date is taken
     *before* that flow, so the flow belongs to the base of the *next*
     sub-period: `factor = value / (previous_value + flow_on_previous_date)`.
-    Flows on the last valuation date have no sub-period left and are ignored.
+
+    A flow on the *last* valuation date is therefore ignored — there is no
+    sub-period after it for the money to earn a return in, and the final value
+    is a pre-flow value like every other. Callers who want that flow to count
+    must value the portfolio again after it, i.e. pass a later valuation.
     """
     if len(values) < 2:
         return Decimal(0)

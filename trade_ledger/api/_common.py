@@ -31,13 +31,21 @@ def get_instrument_or_404(session: Session, instrument_id: int) -> Instrument:
 
 
 def resolve_account_ids(session: Session, account_id: list[int] | None, mode: str) -> list[int]:
-    """Which accounts a stats endpoint reads. Explicit `account_id` values win
-    (404 if one is unknown); otherwise every account in `mode`, and `all`
-    means no mode filter. Modes are never mixed unless asked for.
+    """Which accounts a stats endpoint reads.
+
+    Modes are never mixed. `mode` filters the result even when `account_id`
+    names accounts explicitly, so an id belonging to another mode yields no
+    accounts rather than leaking a live position into a paper figure — the
+    same rule `trades._mode_filter` applies. UI account tabs pass `mode=all`,
+    which uses the given ids as-is.
+
+    An id that matches no account at all is still a 404: a typo should not
+    read as an empty portfolio.
     """
-    if account_id:
-        return [get_account_or_404(session, one).id for one in account_id]
-    stmt = select(Account.id)
-    if mode != "all":
-        stmt = stmt.where(Account.mode == mode)
+    ids = [get_account_or_404(session, one).id for one in account_id or []]
+    if mode == "all":
+        return ids or list(session.execute(select(Account.id)).scalars())
+    stmt = select(Account.id).where(Account.mode == mode)
+    if ids:
+        stmt = stmt.where(Account.id.in_(ids))
     return list(session.execute(stmt).scalars())

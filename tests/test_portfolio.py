@@ -356,9 +356,27 @@ def test_holdings_route_defaults_to_paper_mode(
     assert {h["instrument"]["symbol"] for h in both.json()} == {"BTC", "ETH"}
 
     only_live = client.get(
-        "/api/portfolio/holdings", params={"at": "2026-01-01", "account_id": live.id}
+        "/api/portfolio/holdings",
+        params={"at": "2026-01-01", "account_id": live.id, "mode": "all"},
     )
     assert [h["instrument"]["symbol"] for h in only_live.json()] == ["ETH"]
+
+
+def test_an_explicit_account_id_never_bypasses_the_mode_filter(
+    client, session, account_factory, instrument_factory
+):
+    """A live account asked for under the default paper mode reads as empty —
+    the id narrows the selection, it does not widen it past `mode`.
+    """
+    live = account_factory(mode=Mode.LIVE)
+    eth = instrument_factory(symbol="ETH")
+    _tx(session, live, TxType.BUY, date(2026, 1, 1), eth, quantity=1, amount_eur=1000)
+    _price(session, eth, date(2026, 1, 1), 1200)
+
+    resp = client.get("/api/portfolio/holdings", params={"at": "2026-01-01", "account_id": live.id})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
 
 
 def test_holdings_route_404s_on_an_unknown_account(client):
@@ -455,3 +473,27 @@ def test_returns_route_is_null_when_a_price_is_missing(
         "end_value": None,
         "net_flows": "0",
     }
+
+
+def test_returns_route_ignores_a_deposit_dated_on_the_last_day(
+    client, session, account_factory, instrument_factory
+):
+    """`end_value` counts a deposit made on `to`, the TWR does not: there is no
+    sub-period left for that money to earn anything in.
+    """
+    account = account_factory()
+    btc = instrument_factory(symbol="BTC")
+    _tx(session, account, TxType.DEPOSIT, date(2026, 1, 1), amount_eur=1000)
+    _tx(session, account, TxType.BUY, date(2026, 1, 1), btc, quantity=1, amount_eur=1000)
+    _price(session, btc, date(2026, 1, 1), 1000)
+    _tx(session, account, TxType.DEPOSIT, date(2026, 1, 31), amount_eur=500)
+    _price(session, btc, date(2026, 1, 31), 1100)
+
+    body = client.get(
+        "/api/portfolio/returns", params={"from": "2026-01-01", "to": "2026-01-31"}
+    ).json()
+
+    assert body["ttwror"] == "0.1"  # 1.100 / 1.000, the 500 deposited that day left out
+    assert body["start_value"] == "1000"
+    assert body["end_value"] == "1600"  # 1.100 held plus the 500 in cash
+    assert body["net_flows"] == "500"
