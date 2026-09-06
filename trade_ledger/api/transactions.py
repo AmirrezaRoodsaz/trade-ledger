@@ -5,14 +5,17 @@ import io
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import model_validator
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..enums import TxSource, TxType
-from ..models import Account, Instrument, Transaction
+from ..ledger import check_non_negative_amounts
+from ..models import Instrument, Transaction
+from ._common import get_account_or_404
 from .schemas import BaseModel, Money, Page
 
 router = APIRouter()
@@ -38,6 +41,11 @@ class TransactionIn(BaseModel):
     external_id: str | None = None
     link_id: str | None = None
     note: str | None = None
+
+    @model_validator(mode="after")
+    def _check_signs(self) -> TransactionIn:
+        check_non_negative_amounts(self.type, self.quantity, self.fee_eur, self.amount_eur)
+        return self
 
 
 class TransactionOut(TransactionIn):
@@ -67,13 +75,6 @@ def _apply_filters(
     return stmt
 
 
-def _get_account_or_404(session: Session, account_id: int) -> Account:
-    account = session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="account not found")
-    return account
-
-
 @router.get("/transactions", response_model=Page[TransactionOut])
 def list_transactions(
     account_id: int | None = None,
@@ -81,8 +82,8 @@ def list_transactions(
     instrument_id: int | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-    page: int = 1,
-    page_size: int = 100,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
 ):
     filtered = _apply_filters(
@@ -133,7 +134,7 @@ def export_transactions_csv(
 
 @router.post("/transactions", response_model=TransactionOut, status_code=201)
 def create_transaction(payload: TransactionIn, session: Session = Depends(get_session)):
-    _get_account_or_404(session, payload.account_id)
+    get_account_or_404(session, payload.account_id)
     if payload.instrument_id is not None and session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
     tx = Transaction(**payload.model_dump(), source=TxSource.MANUAL)
@@ -148,7 +149,7 @@ def update_transaction(tx_id: int, payload: TransactionIn, session: Session = De
     tx = session.get(Transaction, tx_id)
     if tx is None:
         raise HTTPException(status_code=404, detail="transaction not found")
-    _get_account_or_404(session, payload.account_id)
+    get_account_or_404(session, payload.account_id)
     if payload.instrument_id is not None and session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
     for field, value in payload.model_dump().items():

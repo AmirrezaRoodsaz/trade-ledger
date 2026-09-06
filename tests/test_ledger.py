@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from trade_ledger.enums import AssetClass, TxSource, TxType
@@ -139,3 +141,34 @@ def test_cash_balance_sums_deltas(session, account_factory):
     ]
     upsert_transactions(session, account, drafts)
     assert cash_balance(session, account.id) == Decimal(799)
+
+
+def test_txdraft_rejects_negative_amount_eur_for_buy():
+    with pytest.raises(ValidationError):
+        TxDraft(
+            ts=datetime(2026, 1, 1, tzinfo=UTC),
+            type=TxType.BUY,
+            quantity=Decimal(1),
+            amount_eur=Decimal(-500),
+            source=TxSource.MANUAL,
+        )
+
+
+def test_txdraft_allows_signed_amount_eur_for_adjustment():
+    draft = TxDraft(
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        type=TxType.ADJUSTMENT,
+        amount_eur=Decimal(-5),
+        source=TxSource.MANUAL,
+    )
+    assert draft.amount_eur == Decimal(-5)
+
+
+def test_txdraft_rejects_negative_quantity_even_for_adjustment():
+    with pytest.raises(ValidationError):
+        TxDraft(
+            ts=datetime(2026, 1, 1, tzinfo=UTC),
+            type=TxType.ADJUSTMENT,
+            quantity=Decimal(-1),
+            source=TxSource.MANUAL,
+        )

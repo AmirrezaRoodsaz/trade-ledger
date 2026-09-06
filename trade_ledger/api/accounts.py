@@ -10,6 +10,7 @@ from ..db import get_session
 from ..enums import AccountKind, Mode, Venue
 from ..ledger import cash_balance, positions
 from ..models import Account, Instrument, SyncRun, Transaction
+from ._common import get_account_or_404
 from .schemas import BaseModel, Money
 
 router = APIRouter()
@@ -50,13 +51,6 @@ class AccountSummary(BaseModel):
     last_sync: datetime | None
 
 
-def _get_account_or_404(session: Session, account_id: int) -> Account:
-    account = session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="account not found")
-    return account
-
-
 @router.get("/accounts", response_model=list[AccountOut])
 def list_accounts(session: Session = Depends(get_session)):
     return session.execute(select(Account)).scalars().all()
@@ -73,13 +67,17 @@ def create_account(payload: AccountIn, session: Session = Depends(get_session)):
 
 @router.get("/accounts/{account_id}", response_model=AccountOut)
 def get_account(account_id: int, session: Session = Depends(get_session)):
-    return _get_account_or_404(session, account_id)
+    return get_account_or_404(session, account_id)
 
 
 @router.put("/accounts/{account_id}", response_model=AccountOut)
 def update_account(account_id: int, payload: AccountIn, session: Session = Depends(get_session)):
-    account = _get_account_or_404(session, account_id)
-    for field, value in payload.model_dump().items():
+    account = get_account_or_404(session, account_id)
+    data = payload.model_dump()
+    # `Account.__init__` defaults tax_wallet to name only on construction —
+    # a setattr loop bypasses that, so re-apply the same default here.
+    data["tax_wallet"] = data["tax_wallet"] or data["name"]
+    for field, value in data.items():
         setattr(account, field, value)
     session.commit()
     session.refresh(account)
@@ -88,7 +86,7 @@ def update_account(account_id: int, payload: AccountIn, session: Session = Depen
 
 @router.delete("/accounts/{account_id}", status_code=204)
 def delete_account(account_id: int, session: Session = Depends(get_session)):
-    account = _get_account_or_404(session, account_id)
+    account = get_account_or_404(session, account_id)
     tx_count = session.scalar(
         select(func.count()).select_from(Transaction).where(Transaction.account_id == account_id)
     )
@@ -100,7 +98,7 @@ def delete_account(account_id: int, session: Session = Depends(get_session)):
 
 @router.get("/accounts/{account_id}/summary", response_model=AccountSummary)
 def get_account_summary(account_id: int, session: Session = Depends(get_session)):
-    _get_account_or_404(session, account_id)
+    get_account_or_404(session, account_id)
 
     cash_eur = cash_balance(session, account_id)
     position_out = [

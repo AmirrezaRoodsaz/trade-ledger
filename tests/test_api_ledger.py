@@ -130,3 +130,66 @@ def test_transactions_export_csv_streams_all_columns(client):
 def test_account_delete_missing_returns_404(client):
     resp = client.delete("/api/accounts/999")
     assert resp.status_code == 404
+
+
+def test_put_account_without_tax_wallet_defaults_to_name(client):
+    account = _create_account(client, name="okx-main")
+
+    resp = client.put(
+        f"/api/accounts/{account['id']}",
+        json={
+            "venue": "okx",
+            "name": "okx-main",
+            "kind": "crypto_spot",
+            "mode": "live",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["mode"] == "live"
+    assert body["tax_wallet"] == "okx-main"
+
+
+def test_post_transaction_buy_with_negative_amount_eur_is_rejected(client):
+    account = _create_account(client)
+    resp = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "ts": "2026-01-01T00:00:00+00:00",
+            "type": "buy",
+            "amount_eur": "-500",
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_post_transaction_adjustment_allows_negative_amount_eur(client):
+    account = _create_account(client)
+    resp = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "ts": "2026-01-01T00:00:00+00:00",
+            "type": "adjustment",
+            "amount_eur": "-5",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["amount_eur"] == "-5"
+
+
+def test_put_instrument_updates_fields(client):
+    instrument = _create_instrument(client)
+    resp = client.put(
+        f"/api/instruments/{instrument['id']}",
+        json={"symbol": "BTC", "asset_class": "crypto", "name": "Bitcoin"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Bitcoin"
+
+
+def test_post_duplicate_instrument_is_rejected(client):
+    _create_instrument(client)
+    resp = client.post("/api/instruments", json={"symbol": "BTC", "asset_class": "crypto"})
+    assert resp.status_code == 422

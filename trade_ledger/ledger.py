@@ -12,7 +12,7 @@ import hashlib
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,24 @@ def position_delta(tx) -> Decimal:
     return Decimal(0)
 
 
+def check_non_negative_amounts(
+    type_: TxType, quantity: Decimal, fee_eur: Decimal, amount_eur: Decimal
+) -> None:
+    """`quantity`/`fee_eur` are always non-negative; `amount_eur` too, except
+    `adjustment.amount_eur` which may be signed. Shared by `TxDraft` (every
+    import path) and the manual-entry API's `TransactionIn` so both write
+    paths enforce the same rule.
+    """
+    if quantity < 0:
+        raise ValueError("quantity must be non-negative")
+    if fee_eur < 0:
+        raise ValueError("fee_eur must be non-negative")
+    if amount_eur < 0 and type_ != TxType.ADJUSTMENT:
+        raise ValueError(
+            "amount_eur must be non-negative (only adjustment.amount_eur may be signed)"
+        )
+
+
 class TxDraft(BaseModel):
     """A `Transaction` not yet resolved against the DB: identifies its
     instrument by symbol/asset_class rather than an `instrument_id`.
@@ -82,6 +100,11 @@ class TxDraft(BaseModel):
     instrument_symbol: str | None = None
     asset_class: AssetClass | None = None
     isin: str | None = None
+
+    @model_validator(mode="after")
+    def _check_signs(self) -> TxDraft:
+        check_non_negative_amounts(self.type, self.quantity, self.fee_eur, self.amount_eur)
+        return self
 
 
 def get_or_create_instrument(
