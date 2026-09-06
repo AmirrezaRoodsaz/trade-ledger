@@ -126,7 +126,7 @@ def _cmd_tax_year(args: argparse.Namespace) -> int:
 
     db.init_db(get_settings().DB_PATH)
     with db.SessionLocal() as session:
-        print_year(session, args.year)
+        print_year(session, args.year, args.mode)
     return 0
 
 
@@ -168,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tax_year = sub.add_parser("tax-year")
     p_tax_year.add_argument("year", type=int)
+    p_tax_year.add_argument("--mode", choices=["live", "paper", "demo", "all"], default="live")
     p_tax_year.set_defaults(func=_cmd_tax_year)
 
     p_report = sub.add_parser("report")

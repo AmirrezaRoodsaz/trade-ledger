@@ -52,8 +52,10 @@ TEILFREISTELLUNG = {
     FundType.SONSTIGE: 0,
 }
 
-# 1 January and 31 December are never trading days, so the "value at the
-# beginning/end of the year" is the nearest cached close within a week.
+# ponytail: 1 January and 31 December are never trading days, so the "value at
+# the beginning/end of the year" is the nearest cached close within a week.
+# Ceiling: a fund that did not trade for over a week around the turn of the year
+# gets no Vorabpauschale (and a warning). Widen the window if that ever bites.
 _PRICE_SEARCH_DAYS = 7
 
 
@@ -79,8 +81,11 @@ class P23Summary:
 
 @dataclass
 class P22Summary:
-    """Section 22 Nr. 3 EStG. `werbungskosten` has no source in the ledger yet
-    (no expense rows), so it is always 0 and `net == income`.
+    """Section 22 Nr. 3 EStG.
+
+    ponytail: `werbungskosten` is always 0 — the ledger has no expense rows to
+    draw it from, so `net == income`. Fill it in once a `FEE`-like row can be
+    attached to a Leistung.
     """
 
     income: Decimal = ZERO
@@ -159,6 +164,13 @@ class YearSummary:
     warnings: list[str] = field(default_factory=list)
 
 
+def accounts_in_mode(session: Session, mode: str) -> list[int] | None:
+    """Account ids in `mode`, or `None` for `all` (i.e. no filter at all)."""
+    if mode == "all":
+        return None
+    return list(session.execute(select(Account.id).where(Account.mode == mode)).scalars())
+
+
 def _sum(values) -> Decimal:
     return sum(values, ZERO)
 
@@ -206,6 +218,11 @@ def summarize(session: Session, year: int, account_ids: list[int] | None = None)
     warnings = list(fifo.warnings)
     in_year = [t for t in transactions if start <= t.ts <= end]
     disposals = [d for d in fifo.disposals if start <= d.ts <= end]
+    warnings.extend(
+        f"tx {d.tx_id}: disposal has no tax regime, not counted"
+        for d in disposals
+        if d.regime == TaxRegime.NONE
+    )
 
     p23 = _p23(disposals)
     p22 = _p22(in_year, instrument_by_id, account_by_id)
@@ -243,7 +260,7 @@ def _p23(disposals: list[Disposal]) -> P23Summary:
         proceeds=_sum(d.proceeds_eur for d in taxable),
         cost=_sum(d.cost_eur for d in taxable),
         net=net,
-        exceeded=net >= P23_FREIGRENZE,
+        exceeded=net.quantize(CENT, ROUND_HALF_UP) >= P23_FREIGRENZE,
         disposals=everything,
     )
 
@@ -257,7 +274,8 @@ def _p22(in_year, instrument_by_id, account_by_id) -> P22Summary:
         == TaxRegime.P22
     ]
     income = _sum(t.amount_eur for t in items)
-    return P22Summary(income=income, net=income, exceeded=income >= P22_FREIGRENZE, items=items)
+    exceeded = income.quantize(CENT, ROUND_HALF_UP) >= P22_FREIGRENZE
+    return P22Summary(income=income, net=income, exceeded=exceeded, items=items)
 
 
 def _inv(session, year, disposals, in_year, fifo, instrument_by_id, warnings) -> list[InvRow]:
@@ -294,11 +312,13 @@ def _inv(session, year, disposals, in_year, fifo, instrument_by_id, warnings) ->
         if _is_fund(instrument_by_id.get(lot.instrument_id)) and lot.quantity > 0:
             lots_by_instrument.setdefault(lot.instrument_id, []).append(lot)
 
+    if basiszins is None and lots_by_instrument:
+        warnings.append(f"no Basiszins for {year}, Vorabpauschale set to 0")
+
     for instrument_id, lots in lots_by_instrument.items():
         instrument = instrument_by_id[instrument_id]
         row = row_for(instrument)
         if basiszins is None:
-            warnings.append(f"no Basiszins for {year}, Vorabpauschale set to 0")
             continue
         jan1 = _close_eur_near(session, instrument, date(year, 1, 1), 1)
         dec31 = _close_eur_near(session, instrument, date(year, 12, 31), -1)
@@ -309,7 +329,11 @@ def _inv(session, year, disposals, in_year, fifo, instrument_by_id, warnings) ->
             )
             continue
         total_qty = _sum(lot.quantity for lot in lots)
-        # The year's distributions are shared out over the lots by size.
+        # ponytail: the year's distributions are shared over the lots still held
+        # at 31.12 by size. Ceiling: units sold during the year get no share, so
+        # a fund that was partly sold after a distribution slightly over-states
+        # its Vorabpauschale. Allocate per lot at the distribution date if that
+        # ever matters.
         paid = row.distributions
         for lot in lots:
             share = paid * lot.quantity / total_qty if total_qty else ZERO

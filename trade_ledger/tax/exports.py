@@ -17,6 +17,9 @@ from decimal import Decimal
 
 from ..enums import TxType
 
+# ponytail: a best-effort map onto Blockpit's `Label` vocabulary, guessed from
+# secondary documentation. Ceiling: an unknown type lands on "Other" and needs
+# fixing by hand in the tool. Check the current template before a real import.
 _BLOCKPIT_LABEL = {
     TxType.BUY: "Trade",
     TxType.SELL: "Trade",

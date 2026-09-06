@@ -132,6 +132,12 @@ def test_every_line_is_dated_and_flagged():
     assert {line.note for line in lines} == {"secondary source, VERIFY"}
 
 
+def test_labels_keep_their_umlauts(summary):
+    labels = {line["zeile"]: line["label"] for line in anlage.lines(summary, 2025)}
+    assert labels[45].startswith("Veräußerungsgeschäfte mit virtuellen Währungen")
+    assert labels[4] == "Ausschüttungen - Aktienfonds"
+
+
 def test_an_unknown_veranlagungszeitraum_yields_no_lines(summary):
     assert anlage.lines(summary, 2099) == []
 

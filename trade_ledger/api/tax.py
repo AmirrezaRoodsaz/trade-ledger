@@ -21,7 +21,7 @@ from ..db import get_session
 from ..enums import Mode, TaxRegime
 from ..models import Account, Instrument, Transaction
 from ..tax import anlage, exports
-from ..tax.year_summary import YearSummary, summarize
+from ..tax.year_summary import YearSummary, accounts_in_mode, summarize
 from .schemas import BaseModel, Money
 
 router = APIRouter(prefix="/tax")
@@ -109,6 +109,8 @@ class DisposalOut(BaseModel):
     proceeds_eur: Money
     cost_eur: Money
     fee_eur: Money
+    # Net of the disposal fee, unlike `p23.taxable_gains`, which is gross so
+    # that the fee can go on its own Werbungskosten line of Anlage SO.
     gain_eur: Money
 
 
@@ -155,6 +157,7 @@ class LotsOut(TaxResponse):
 class AnlageOut(TaxResponse):
     vz: int
     lines: list[AnlageLineOut]
+    note: str | None = None
 
 
 class HoldingsOut(TaxResponse):
@@ -171,11 +174,7 @@ class WarningsOut(TaxResponse):
 
 def _account_ids(session: Session, mode: str, account_id: list[int] | None) -> list[int] | None:
     """Explicit account ids win; otherwise every account in `mode`."""
-    if account_id:
-        return account_id
-    if mode == "all":
-        return None
-    return list(session.execute(select(Account.id).where(Account.mode == mode)).scalars())
+    return account_id or accounts_in_mode(session, mode)
 
 
 def _summary(session: Session, year: int, mode: str, account_id: list[int] | None) -> YearSummary:
@@ -282,7 +281,9 @@ def year_anlage(
     session: Session = Depends(get_session),
 ):
     summary = _summary(session, year, mode, account_id)
-    return AnlageOut(vz=year, lines=anlage.lines(summary, year))
+    form_lines = anlage.lines(summary, year)
+    note = None if form_lines else f"no line mapping for VZ {year}"
+    return AnlageOut(vz=year, lines=form_lines, note=note)
 
 
 @router.get("/{year}/eoy-holdings", response_model=HoldingsOut)

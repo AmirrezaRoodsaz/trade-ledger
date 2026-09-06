@@ -12,7 +12,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from .anlage import lines as anlage_lines
-from .year_summary import YearSummary, summarize
+from .year_summary import YearSummary, accounts_in_mode, summarize
 
 DISCLAIMER = "Berechnung — mit Steuerberater prüfen"
 FORM_STATUS = "VZ 2025, geprüft 2026-09-06"
@@ -32,11 +32,11 @@ def _table(header: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
-def render(summary: YearSummary) -> str:
+def render(summary: YearSummary, mode: str = "live") -> str:
     """The whole year as one printable block."""
     p23, p22, p20 = summary.p23, summary.p22, summary.p20
     blocks = [
-        f"Steuerjahr {summary.year} — {DISCLAIMER} (Formstand: {FORM_STATUS})",
+        f"Steuerjahr {summary.year} (Modus: {mode}) — {DISCLAIMER} (Formstand: {FORM_STATUS})",
         "",
         _table(
             ["Bereich", "Betrag", "Freigrenze", "steuerpflichtig"],
@@ -98,5 +98,8 @@ def render(summary: YearSummary) -> str:
     return "\n".join(blocks)
 
 
-def print_year(session: Session, year: int, account_ids: list[int] | None = None) -> None:
-    print(render(summarize(session, year, account_ids)))
+def print_year(session: Session, year: int, mode: str = "live") -> None:
+    """Print one tax year. `mode` is `live` by default — tax is about real
+    money, so paper and demo accounts stay out unless asked for by name.
+    """
+    print(render(summarize(session, year, accounts_in_mode(session, mode)), mode))

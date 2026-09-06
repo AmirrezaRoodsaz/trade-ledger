@@ -278,6 +278,20 @@ def test_paper_accounts_are_excluded_by_account_ids(session, okx, btc, account_f
     assert summarize(session, 2025, [paper.id]).p23.net == D(1200)
 
 
+def test_disposal_without_a_regime_is_warned_about(session, account_factory, btc, tx_factory):
+    # Crypto in a plain broker account is neither spot nor a Termingeschaeft,
+    # so `regime_for` yields NONE and the disposal reaches no bucket at all.
+    odd = account_factory(name="t212-invest", kind=AccountKind.BROKER_INVEST, mode=Mode.LIVE)
+    tx_factory(odd, btc, TxType.BUY, ts(2025, 1, 10), quantity=D(1), amount_eur=D(10000))
+    sell = tx_factory(odd, btc, TxType.SELL, ts(2025, 6, 1), quantity=D(1), amount_eur=D(11200))
+
+    summary = summarize(session, 2025)
+
+    assert summary.p23.net == D(0)
+    assert summary.p20.aktien_gains == D(0)
+    assert f"tx {sell.id}: disposal has no tax regime, not counted" in summary.warnings
+
+
 # --- routes ------------------------------------------------------------------
 
 
@@ -325,6 +339,15 @@ def test_disposals_lots_and_export_routes(client, okx, btc, tx_factory):
     assert export.status_code == 200
     assert export.headers["content-type"].startswith("text/csv")
     assert "Integration Name" in export.text
+
+
+def test_anlage_route_notes_a_year_without_a_line_mapping(client, okx, btc, tx_factory):
+    _crypto_year(okx, btc, tx_factory, D(11200))
+
+    assert client.get("/api/tax/2025/anlage").json()["note"] is None
+    body = client.get("/api/tax/2024/anlage").json()
+    assert body["lines"] == []
+    assert body["note"] == "no line mapping for VZ 2024"
 
 
 def test_year_out_of_range_is_rejected(client):
