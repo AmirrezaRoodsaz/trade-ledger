@@ -39,6 +39,7 @@ from .transactions import TransactionOut
 router = APIRouter()
 
 SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
 
 
 class TradeIn(BaseModel):
@@ -424,9 +425,12 @@ async def upload_screenshots(
     stored = json.loads(trade.screenshots)
     for upload in files:
         relative = Path("screenshots") / str(trade_id) / _stored_name(upload.filename or "")
+        blob = await upload.read()
+        if len(blob) > MAX_SCREENSHOT_BYTES:
+            raise HTTPException(status_code=413, detail="screenshot larger than 10 MB")
         target = data_dir / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(await upload.read())
+        target.write_bytes(blob)
         stored.append(relative.as_posix())
 
     trade.screenshots = json.dumps(stored)

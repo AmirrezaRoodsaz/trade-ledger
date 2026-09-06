@@ -123,3 +123,21 @@ def test_env_status_detects_presence(tmp_path, monkeypatch):
     status = settings.env_status()
 
     assert status == {"SET_KEY": True, "ABSENT_KEY": False}
+
+
+def test_relative_db_and_data_paths_resolve_against_the_repo_root(monkeypatch):
+    """Started from anywhere, the app must open the same database and write
+    screenshots to the same directory — cwd-relative defaults did not.
+    """
+    monkeypatch.setenv("DB_PATH", "data/ledger.db")
+    monkeypatch.setenv("DATA_DIR", "data")
+    resolved = settings.Settings()
+
+    assert resolved.DB_PATH == str(settings._REPO_ROOT / "data" / "ledger.db")
+    assert resolved.DATA_DIR == str(settings._REPO_ROOT / "data")
+
+    monkeypatch.setenv("DB_PATH", ":memory:")  # SQLite's marker, not a path
+    assert settings.Settings().DB_PATH == ":memory:"
+
+    monkeypatch.setenv("DB_PATH", "/tmp/other.db")
+    assert settings.Settings().DB_PATH == "/tmp/other.db"
