@@ -225,10 +225,20 @@ function ScreenshotPanel({ trade, onDone }: { trade: Trade; onDone: () => void }
       {trade.screenshots.length === 0 ? (
         <p className="text-muted">No screenshots yet.</p>
       ) : (
-        <ul className="mb-2">
+        // The backend serves DATA_DIR/screenshots at /screenshots, and the
+        // stored path already starts with "screenshots/", so a leading slash
+        // is the whole URL.
+        <ul className="mb-2 flex flex-wrap gap-2">
           {trade.screenshots.map((path) => (
-            <li key={path} className="text-muted">
-              {path}
+            <li key={path}>
+              <a href={`/${path}`} target="_blank" rel="noreferrer">
+                <img
+                  src={`/${path}`}
+                  alt={path.split("/").pop() ?? "screenshot"}
+                  className="h-24 w-auto rounded border border-line object-cover"
+                  loading="lazy"
+                />
+              </a>
             </li>
           ))}
         </ul>

@@ -7,9 +7,25 @@ import sys
 from trade_ledger import cli
 
 
-def test_stub_subcommands_print_not_yet_implemented(capsys):
+def test_serve_parses_an_explicit_port_of_zero(capsys):
+    """`--port 0` is a real value, not a missing one: `or settings.PORT` would
+    have swallowed it."""
+    args = cli.build_parser().parse_args(["serve", "--port", "0", "--no-browser"])
+
+    assert args.port == 0
+    assert args.no_browser is True
+
+
+def test_sync_all_on_an_empty_ledger_is_a_no_op(capsys, monkeypatch):
+    monkeypatch.setenv("DB_PATH", ":memory:")
     assert cli.main(["sync", "--all"]) == 0
-    assert "not yet implemented" in capsys.readouterr().out
+    assert "no accounts to sync" in capsys.readouterr().out
+
+
+def test_sync_names_an_account_it_does_not_know(capsys, monkeypatch):
+    monkeypatch.setenv("DB_PATH", ":memory:")
+    assert cli.main(["sync", "--account", "nope"]) == 1
+    assert "unknown account: nope" in capsys.readouterr().out
 
 
 def test_report_command_runs_in_a_fresh_process(tmp_path):

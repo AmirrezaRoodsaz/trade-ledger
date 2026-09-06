@@ -1,9 +1,8 @@
 """Ledger core: sign conventions, instrument dedup, transaction upsert, aggregates.
 
 Pure functions over `Transaction`-shaped objects (ORM rows, or any object with
-the same attributes) plus a couple of DB-backed helpers. See plan.md "Sign
-conventions" for the source of truth `cash_delta_eur`/`position_delta` are
-transcribed from.
+the same attributes) plus a couple of DB-backed helpers. `docs/design.md`
+spells out the sign conventions `cash_delta_eur`/`position_delta` implement.
 """
 
 from __future__ import annotations

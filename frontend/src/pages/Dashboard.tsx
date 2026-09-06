@@ -33,7 +33,8 @@ async function load(year: number): Promise<DashboardData> {
         ),
       ),
     ).then((pairs) => Object.fromEntries(pairs) as Record<number, SyncRun | null>),
-    // Analytics and tax land in later tasks; until then the cards show "—".
+    // `soft` swallows a failing card so one empty section never blanks the
+    // whole dashboard — the card just shows "—".
     soft(get<Stats>("/analytics/stats?mode=paper")),
     soft(get<Stats>("/analytics/stats?mode=live")),
     get<Page<Trade>>("/trades?status=open&mode=all&page_size=1"),

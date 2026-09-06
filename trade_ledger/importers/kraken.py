@@ -122,7 +122,7 @@ def _reward_draft(row: dict, refid: str) -> TxDraft:
         type=TxType.STAKING_REWARD,
         quantity=abs(amount),
         amount_eur=Decimal(0),
-        fx_source="pending",  # no price in a ledger export; Task 5 fills it
+        fx_source="pending",  # no price in a ledger export; prices fill it in
         external_id=refid,
         source=TxSource.CSV,
         instrument_symbol=asset,

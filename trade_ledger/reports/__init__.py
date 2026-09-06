@@ -1,1 +1,1 @@
-"""Weekly PDF report generation (Task 13)."""
+"""Weekly PDF report generation."""

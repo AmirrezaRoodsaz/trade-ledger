@@ -57,7 +57,7 @@ def credentials(prefix: str) -> dict[str, str]:
 
 def build_adapter(account: Account, settings: Settings) -> Adapter:
     """Dispatch on `account.venue`. Trading 212, OKX, and Kraken are wired
-    up; every other venue raises until a later task adds it.
+    up; every other venue raises `NotImplementedError`.
     """
     if account.venue == Venue.TRADING212:
         from .trading212 import Trading212Adapter

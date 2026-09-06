@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,9 +19,10 @@ from sqlalchemy import String, cast, func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
-from ..enums import Mode, TaxRegime
+from ..enums import Mode, TaxRegime, TxType
 from ..models import Account, Instrument, Transaction
 from ..tax import anlage, exports
+from ..tax.regime import regime_for
 from ..tax.year_summary import YearSummary, accounts_in_mode, summarize
 from .schemas import BaseModel, Money
 
@@ -121,6 +123,9 @@ class LotOut(BaseModel):
     acquired: datetime
     quantity: Money
     cost_eur: Money
+    # The regime a disposal of this lot would fall under. Only `p23` has a
+    # twelve-month Spekulationsfrist, so the UI shows a countdown for it alone.
+    regime: TaxRegime
 
 
 class AnlageLineOut(BaseModel):
@@ -258,6 +263,18 @@ def year_lots(
     session: Session = Depends(get_session),
 ):
     summary = _summary(session, year, mode, account_id)
+    instruments = {i.id: i for i in session.execute(select(Instrument)).scalars()}
+    # A lot is keyed by tax wallet, not account id; accounts that share a wallet
+    # share a FIFO pool and, by construction, the same kind.
+    accounts = {a.tax_wallet: a for a in session.execute(select(Account)).scalars()}
+
+    def _regime(lot) -> TaxRegime:
+        """`regime_for` on an acquisition-shaped view of the lot: the asset
+        class and the account kind decide, exactly as they do for the SELL that
+        will one day close it."""
+        probe = SimpleNamespace(type=TxType.BUY, amount_eur=lot.cost_eur)
+        return regime_for(probe, instruments.get(lot.instrument_id), accounts.get(lot.wallet))
+
     return LotsOut(
         lots=[
             LotOut(
@@ -267,6 +284,7 @@ def year_lots(
                 acquired=lot.acquired,
                 quantity=lot.quantity,
                 cost_eur=lot.cost_eur,
+                regime=_regime(lot),
             )
             for lot in summary.fifo.open_lots
         ]

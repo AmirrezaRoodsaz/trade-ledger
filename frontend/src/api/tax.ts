@@ -98,6 +98,8 @@ export interface Lot {
   acquired: string;
   quantity: string;
   cost_eur: string;
+  /** Only `p23` lots have a twelve-month Spekulationsfrist. */
+  regime: TaxRegime;
 }
 
 export interface AnlageLine {
