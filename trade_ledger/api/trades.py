@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+import calendar as calendar_mod
+import json
+import re
+from datetime import UTC, datetime
+from decimal import Decimal
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import Field, field_validator
+from sqlalchemy import Select, func, select
+from sqlalchemy.orm import Session
+
+from ..db import get_session
+from ..enums import Direction, Mistake, Mode, TradeStatus
+from ..journal import (
+    ManualFill,
+    StatusError,
+    cancel_trade,
+    close_trade,
+    open_trade,
+    plan_trade,
+    review_trade,
+    suggest_fills,
+)
+from ..models import Account, Instrument, PlaybookVersion, Trade
+from ..settings import get_settings
+from ._common import get_account_or_404
+from .schemas import BaseModel, Money, Page
+from .transactions import TransactionOut
+
+router = APIRouter()
+
+SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+class TradeIn(BaseModel):
+    account_id: int
+    instrument_id: int
+    direction: Direction
+    playbook_version_id: int | None = None
+    planned_entry: Money | None = None
+    planned_stop: Money | None = None
+    planned_target: Money | None = None
+    risk_eur: Money | None = None
+    planned_qty: Money | None = None
+    emotion_pre: str | None = None
+    note_pre: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    external_ref: str | None = None
+
+
+class TradeOut(BaseModel):
+    id: int
+    account_id: int
+    instrument_id: int
+    direction: Direction
+    status: TradeStatus
+    playbook_version_id: int | None
+    planned_entry: Money | None
+    planned_stop: Money | None
+    planned_target: Money | None
+    risk_eur: Money | None
+    planned_qty: Money | None
+    opened_ts: datetime | None
+    closed_ts: datetime | None
+    avg_entry: Money | None
+    avg_exit: Money | None
+    quantity: Money | None
+    fees_eur: Money | None
+    result_eur: Money | None
+    mae_eur: Money | None
+    mfe_eur: Money | None
+    r_multiple: Money | None
+    adherence: bool | None
+    mistake: str | None
+    emotion_pre: str | None
+    emotion_post: str | None
+    note_pre: str | None
+    note_post: str | None
+    screenshots: list[str]
+    tags: list[str]
+    external_ref: str | None
+
+    @field_validator("screenshots", "tags", mode="before")
+    @classmethod
+    def _decode_json_list(cls, value):
+        return json.loads(value) if isinstance(value, str) else value
+
+
+class ManualFillIn(BaseModel):
+    ts: datetime
+    quantity: Money
+    price: Money
+    fee_eur: Money = Decimal(0)
+
+
+class FillsIn(BaseModel):
+    fill_ids: list[int] = Field(default_factory=list)
+    manual: ManualFillIn | None = None
+
+
+class ReviewIn(BaseModel):
+    adherence: bool | None = None
+    mistake: Mistake | None = None
+    emotion_post: str | None = None
+    note_post: str | None = None
+
+
+class CalendarDay(BaseModel):
+    count: int
+    result_eur: Money
+    r: Money
+
+
+def _guard(fn, *args, **kwargs):
+    """Run a `journal` call and translate its two failure modes into the
+    status codes the API contract promises: 409 for a lifecycle guard, 422
+    for bad input.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except StatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _get_trade_or_404(session: Session, trade_id: int) -> Trade:
+    trade = session.get(Trade, trade_id)
+    if trade is None:
+        raise HTTPException(status_code=404, detail="trade not found")
+    return trade
+
+
+def _fill_args(payload: FillsIn) -> dict:
+    manual = ManualFill(**payload.manual.model_dump()) if payload.manual else None
+    return {"fill_ids": payload.fill_ids, "manual": manual}
+
+
+def _mode_filter(stmt: Select, mode: str) -> Select:
+    """Trades never mix modes unless `mode=all` is explicit. A trade's mode
+    is its account's.
+    """
+    if mode == "all":
+        return stmt
+    if mode not in set(Mode):
+        raise HTTPException(status_code=422, detail=f"unknown mode: {mode}")
+    return stmt.where(Trade.account_id.in_(select(Account.id).where(Account.mode == mode)))
+
+
+@router.get("/trades", response_model=Page[TradeOut])
+def list_trades(
+    account_id: list[int] | None = Query(None),
+    mode: str = "paper",
+    status: TradeStatus | None = None,
+    playbook_id: int | None = None,
+    instrument_id: int | None = None,
+    tag: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1),
+    session: Session = Depends(get_session),
+):
+    stmt = _mode_filter(select(Trade), mode)
+    if account_id:
+        stmt = stmt.where(Trade.account_id.in_(account_id))
+    if status is not None:
+        stmt = stmt.where(Trade.status == status)
+    if playbook_id is not None:
+        stmt = stmt.where(
+            Trade.playbook_version_id.in_(
+                select(PlaybookVersion.id).where(PlaybookVersion.playbook_id == playbook_id)
+            )
+        )
+    if instrument_id is not None:
+        stmt = stmt.where(Trade.instrument_id == instrument_id)
+    if tag is not None:
+        # ponytail: tags are a JSON list in a text column; a LIKE on the
+        # quoted name is exact enough. Move to a join table if tags ever need
+        # renaming or counting.
+        stmt = stmt.where(Trade.tags.like(f'%"{tag}"%'))
+    if date_from is not None:
+        stmt = stmt.where(Trade.opened_ts >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(Trade.opened_ts <= date_to)
+
+    total = session.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = (
+        session.execute(stmt.order_by(Trade.id).offset((page - 1) * page_size).limit(page_size))
+        .scalars()
+        .all()
+    )
+    return Page(items=rows, total=total)
+
+
+@router.get("/trades/calendar", response_model=dict[str, CalendarDay])
+def trades_calendar(
+    year: int,
+    month: int = Query(..., ge=1, le=12),
+    mode: str = "paper",
+    session: Session = Depends(get_session),
+):
+    """Closed trades of one month, bucketed by close date."""
+    start = datetime(year, month, 1, tzinfo=UTC)
+    last_day = calendar_mod.monthrange(year, month)[1]
+    end = datetime(year, month, last_day, 23, 59, 59, tzinfo=UTC)
+
+    stmt = _mode_filter(select(Trade), mode).where(
+        Trade.status == TradeStatus.CLOSED, Trade.closed_ts >= start, Trade.closed_ts <= end
+    )
+    days: dict[str, CalendarDay] = {}
+    for trade in session.execute(stmt).scalars():
+        key = trade.closed_ts.date().isoformat()
+        day = days.setdefault(key, CalendarDay(count=0, result_eur=Decimal(0), r=Decimal(0)))
+        day.count += 1
+        day.result_eur += trade.result_eur or Decimal(0)
+        day.r += trade.r_multiple or Decimal(0)
+    return days
+
+
+@router.post("/trades", response_model=TradeOut, status_code=201)
+def create_trade(payload: TradeIn, session: Session = Depends(get_session)):
+    get_account_or_404(session, payload.account_id)
+    if session.get(Instrument, payload.instrument_id) is None:
+        raise HTTPException(status_code=404, detail="instrument not found")
+    return _guard(plan_trade, session, payload.model_dump())
+
+
+@router.get("/trades/{trade_id}", response_model=TradeOut)
+def get_trade(trade_id: int, session: Session = Depends(get_session)):
+    return _get_trade_or_404(session, trade_id)
+
+
+@router.put("/trades/{trade_id}", response_model=TradeOut)
+def update_trade(trade_id: int, payload: TradeIn, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    get_account_or_404(session, payload.account_id)
+    if session.get(Instrument, payload.instrument_id) is None:
+        raise HTTPException(status_code=404, detail="instrument not found")
+    data = payload.model_dump()
+    if data["planned_stop"] is not None and data["planned_stop"] == data["planned_entry"]:
+        raise HTTPException(status_code=422, detail="planned_stop must differ from planned_entry")
+    data["tags"] = json.dumps(data["tags"])
+    # The journal id is server-assigned; an edit that omits it keeps it.
+    data["external_ref"] = data["external_ref"] or trade.external_ref
+    for field, value in data.items():
+        setattr(trade, field, value)
+    session.commit()
+    session.refresh(trade)
+    return trade
+
+
+@router.delete("/trades/{trade_id}", status_code=204)
+def delete_trade(trade_id: int, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    if trade.status not in (TradeStatus.PLANNED, TradeStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409, detail="only planned or cancelled trades can be deleted"
+        )
+    session.delete(trade)
+    session.commit()
+
+
+@router.post("/trades/{trade_id}/open", response_model=TradeOut)
+def post_open_trade(trade_id: int, payload: FillsIn, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    return _guard(open_trade, session, trade, **_fill_args(payload))
+
+
+@router.post("/trades/{trade_id}/close", response_model=TradeOut)
+def post_close_trade(trade_id: int, payload: FillsIn, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    return _guard(close_trade, session, trade, **_fill_args(payload))
+
+
+@router.post("/trades/{trade_id}/review", response_model=TradeOut)
+def post_review_trade(trade_id: int, payload: ReviewIn, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    return _guard(review_trade, session, trade, **payload.model_dump())
+
+
+@router.post("/trades/{trade_id}/cancel", response_model=TradeOut)
+def post_cancel_trade(trade_id: int, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    return _guard(cancel_trade, session, trade)
+
+
+@router.get("/trades/{trade_id}/suggest-fills", response_model=list[TransactionOut])
+def get_suggest_fills(trade_id: int, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    return suggest_fills(session, trade)
+
+
+def _parse_multipart(body: bytes, content_type: str) -> list[tuple[str, bytes]]:
+    """`(filename, bytes)` per uploaded part.
+
+    ponytail: the stdlib email parser instead of pulling in python-multipart
+    for one upload endpoint — form-data is MIME. Swap in FastAPI's
+    `UploadFile` if uploads ever grow beyond a handful of screenshots
+    (this reads the whole request into memory).
+    """
+    if not content_type.startswith("multipart/form-data"):
+        raise HTTPException(status_code=422, detail="expected multipart/form-data")
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+    )
+    return [
+        (part.get_filename(), part.get_payload(decode=True))
+        for part in message.iter_parts()
+        if part.get_filename()
+    ]
+
+
+def _stored_name(filename: str) -> str:
+    """Collision-free, traversal-free file name with an allowed suffix."""
+    name = Path(filename).name
+    if Path(name).suffix.lower() not in SCREENSHOT_SUFFIXES:
+        raise HTTPException(
+            status_code=422, detail="only .png, .jpg, .jpeg and .webp screenshots are allowed"
+        )
+    return f"{uuid4().hex[:8]}-{re.sub(r'[^A-Za-z0-9._-]', '_', name)}"
+
+
+@router.post("/trades/{trade_id}/screenshots", response_model=TradeOut)
+async def upload_screenshots(
+    trade_id: int, request: Request, session: Session = Depends(get_session)
+):
+    trade = _get_trade_or_404(session, trade_id)
+    uploads = _parse_multipart(await request.body(), request.headers.get("content-type", ""))
+    if not uploads:
+        raise HTTPException(status_code=422, detail="no file part in the request")
+
+    data_dir = Path(get_settings().DATA_DIR)
+    stored = json.loads(trade.screenshots)
+    for filename, content in uploads:
+        relative = Path("screenshots") / str(trade_id) / _stored_name(filename)
+        target = data_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        stored.append(relative.as_posix())
+
+    trade.screenshots = json.dumps(stored)
+    session.commit()
+    session.refresh(trade)
+    return trade
