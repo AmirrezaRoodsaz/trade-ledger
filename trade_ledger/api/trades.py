@@ -11,11 +11,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import Field, field_validator
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
-from ..enums import Direction, Mistake, Mode, TradeStatus
+from ..enums import Direction, Mistake, TradeStatus
 from ..journal import (
     ManualFill,
     StatusError,
@@ -26,9 +26,9 @@ from ..journal import (
     review_trade,
     suggest_fills,
 )
-from ..models import Account, Instrument, PlaybookVersion, Trade
+from ..models import Instrument, Trade
 from ..settings import get_settings
-from ._common import get_account_or_404
+from ._common import get_account_or_404, mode_filter, trade_filters
 from .schemas import BaseModel, Money, Page, UTCDatetime
 from .transactions import TransactionOut
 
@@ -141,17 +141,6 @@ def _fill_args(payload: FillsIn) -> dict:
     return {"fill_ids": payload.fill_ids, "manual": manual}
 
 
-def _mode_filter(stmt: Select, mode: str) -> Select:
-    """Trades never mix modes unless `mode=all` is explicit. A trade's mode
-    is its account's.
-    """
-    if mode == "all":
-        return stmt
-    if mode not in set(Mode):
-        raise HTTPException(status_code=422, detail=f"unknown mode: {mode}")
-    return stmt.where(Trade.account_id.in_(select(Account.id).where(Account.mode == mode)))
-
-
 @router.get("/trades", response_model=Page[TradeOut])
 def list_trades(
     account_id: list[int] | None = Query(None),
@@ -166,28 +155,18 @@ def list_trades(
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
 ):
-    stmt = _mode_filter(select(Trade), mode)
-    if account_id:
-        stmt = stmt.where(Trade.account_id.in_(account_id))
+    stmt = trade_filters(
+        select(Trade),
+        mode=mode,
+        account_id=account_id,
+        playbook_id=playbook_id,
+        instrument_id=instrument_id,
+        tag=tag,
+        date_from=date_from,
+        date_to=date_to,
+    )
     if status is not None:
         stmt = stmt.where(Trade.status == status)
-    if playbook_id is not None:
-        stmt = stmt.where(
-            Trade.playbook_version_id.in_(
-                select(PlaybookVersion.id).where(PlaybookVersion.playbook_id == playbook_id)
-            )
-        )
-    if instrument_id is not None:
-        stmt = stmt.where(Trade.instrument_id == instrument_id)
-    if tag is not None:
-        # ponytail: tags are a JSON list in a text column; a LIKE on the
-        # quoted name is exact enough. Move to a join table if tags ever need
-        # renaming or counting.
-        stmt = stmt.where(Trade.tags.like(f'%"{tag}"%'))
-    if date_from is not None:
-        stmt = stmt.where(Trade.opened_ts >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(Trade.opened_ts <= date_to)
 
     total = session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (
@@ -210,7 +189,7 @@ def trades_calendar(
     last_day = calendar_mod.monthrange(year, month)[1]
     end = datetime(year, month, last_day, 23, 59, 59, tzinfo=UTC)
 
-    stmt = _mode_filter(select(Trade), mode).where(
+    stmt = mode_filter(select(Trade), mode).where(
         Trade.status == TradeStatus.CLOSED, Trade.closed_ts >= start, Trade.closed_ts <= end
     )
     days: dict[str, CalendarDay] = {}
