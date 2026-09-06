@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from ..models import Account
+from ..models import Account, Instrument
 
 
 def get_account_or_404(session: Session, account_id: int) -> Account:
@@ -16,3 +16,10 @@ def get_account_or_404(session: Session, account_id: int) -> Account:
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     return account
+
+
+def get_instrument_or_404(session: Session, instrument_id: int) -> Instrument:
+    instrument = session.get(Instrument, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="instrument not found")
+    return instrument
