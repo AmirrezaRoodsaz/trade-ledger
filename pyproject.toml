@@ -15,6 +15,7 @@ dependencies = [
     "matplotlib",
     "fpdf2",
     "pyyaml",
+    "python-multipart>=0.0.32",
 ]
 
 [project.scripts]
