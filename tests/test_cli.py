@@ -7,6 +7,15 @@ import sys
 from trade_ledger import cli
 
 
+def test_serve_parses_an_explicit_port_of_zero(capsys):
+    """`--port 0` is a real value, not a missing one: `or settings.PORT` would
+    have swallowed it."""
+    args = cli.build_parser().parse_args(["serve", "--port", "0", "--no-browser"])
+
+    assert args.port == 0
+    assert args.no_browser is True
+
+
 def test_sync_all_on_an_empty_ledger_is_a_no_op(capsys, monkeypatch):
     monkeypatch.setenv("DB_PATH", ":memory:")
     assert cli.main(["sync", "--all"]) == 0

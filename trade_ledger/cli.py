@@ -28,7 +28,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .main import create_app
 
     settings = get_settings()
-    port = args.port or settings.PORT
+    port = args.port if args.port is not None else settings.PORT
     url = f"http://{settings.HOST}:{port}"
     if not args.no_browser:
         import threading

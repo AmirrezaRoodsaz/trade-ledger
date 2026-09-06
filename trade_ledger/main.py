@@ -27,11 +27,19 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     # Trade screenshots live under DATA_DIR/screenshots and are stored as
     # "screenshots/<trade id>/<file>", so the URL is just "/" + that path.
-    # Created here rather than left to the first upload: StaticFiles 500s on a
-    # missing directory instead of 404ing.
+    # ponytail: check_dir=False rather than creating the directory here, which
+    # would make every create_app (i.e. every test) write into the working
+    # directory. The upload route mkdirs on the first upload, and a path can
+    # only exist in trade.screenshots once that has happened. Ceiling: until
+    # then StaticFiles answers a hand-typed /screenshots/... URL with a 500
+    # rather than a 404 (starlette 1.6). Pre-create the directory if that ever
+    # shows up in a log that matters.
     screenshots = Path(get_settings().DATA_DIR) / "screenshots"
-    screenshots.mkdir(parents=True, exist_ok=True)
-    app.mount("/screenshots", StaticFiles(directory=screenshots), name="screenshots")
+    app.mount(
+        "/screenshots",
+        StaticFiles(directory=screenshots, check_dir=False),
+        name="screenshots",
+    )
 
     index = _DIST / "index.html"
 

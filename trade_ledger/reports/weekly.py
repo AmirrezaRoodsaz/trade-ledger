@@ -85,8 +85,8 @@ def build_weekly(session: Session, week_end: date, mode: str) -> Path:
     # ponytail: `_open_crypto_lots` and `_tax_meters` (via `year_summary.summarize`)
     # each replay the live accounts' full transaction history through `run_fifo`
     # independently — two FIFO passes over the same data on every report. Fine at
-    # this vault's transaction volume; share one `FifoResult` between them if a
-    # report ever gets slow.
+    # a personal ledger's transaction volume; share one `FifoResult` between them
+    # if a report ever gets slow.
     open_lots = _open_crypto_lots(session, week_end)
     tax = _tax_meters(session, week_end.year)
 

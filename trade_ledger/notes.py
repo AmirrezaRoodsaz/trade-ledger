@@ -1,9 +1,10 @@
 """Obsidian note export/import for `Trade` rows.
 
 Writes one Markdown note per trade with a fixed frontmatter key order, so an
-external script reading the vault sees the same shape every time. `render()`
-is hand-built string formatting rather than `yaml.dump`: the template leaves empty
-scalars blank (`opened: `), which no YAML dumper produces by default.
+external script reading the exported notes sees the same shape every time.
+`render()` is hand-built string formatting rather than `yaml.dump`: the
+template leaves empty scalars blank (`opened: `), which no YAML dumper
+produces by default.
 `parse()` reads the frontmatter back with `yaml.safe_load` (blank/quoted
 values are valid YAML either way) plus a couple of regexes for the two body
 sections.
