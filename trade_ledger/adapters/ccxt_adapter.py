@@ -96,7 +96,16 @@ class CcxtAdapter:
 
     # -- pagination -----------------------------------------------------------
 
-    def _paginate(self, fetch: Callable[..., list[dict]], since_ms: int | None) -> list[dict]:
+    def _paginate(
+        self, fetch: Callable[..., list[dict]], since_ms: int | None, kind: str
+    ) -> list[dict]:
+        """Page through `fetch(since=, limit=)`. Every item without a
+        `timestamp` (pending deposits/withdrawals on OKX/Kraken routinely
+        have `None` there) is dropped right here — the single choke point
+        every trade/deposit/withdrawal/ledger call passes through — instead
+        of crashing `max()` below or the `_ts()` conversion further downstream.
+        A warning records what was skipped so a sync run still finishes ok.
+        """
         items: list[dict] = []
         cursor = since_ms
         newest = None
@@ -104,8 +113,18 @@ class CcxtAdapter:
             batch = fetch(since=cursor, limit=_PAGE_LIMIT)
             if not batch:
                 break
-            items.extend(batch)
-            batch_newest = max(item["timestamp"] for item in batch)
+            timed = []
+            for item in batch:
+                if item.get("timestamp") is None:
+                    self.warnings.append(
+                        f"{kind} {item.get('id')} skipped: no timestamp (pending?)"
+                    )
+                    continue
+                timed.append(item)
+            items.extend(timed)
+            if not timed:
+                break  # nothing left to anchor the next page's cursor on
+            batch_newest = max(item["timestamp"] for item in timed)
             if len(batch) < _PAGE_LIMIT or (newest is not None and batch_newest <= newest):
                 break
             newest = batch_newest
@@ -123,13 +142,13 @@ class CcxtAdapter:
 
         since_ms = int(since.timestamp() * 1000) if since is not None else None
         drafts: list[TxDraft] = []
-        for trade in self._paginate(self._exchange.fetch_my_trades, since_ms):
+        for trade in self._paginate(self._exchange.fetch_my_trades, since_ms, "trade"):
             drafts.append(self._trade_draft(trade))
-        for dep in self._paginate(self._exchange.fetch_deposits, since_ms):
+        for dep in self._paginate(self._exchange.fetch_deposits, since_ms, "deposit"):
             drafts.append(self._transfer_draft(dep, "in"))
-        for wd in self._paginate(self._exchange.fetch_withdrawals, since_ms):
+        for wd in self._paginate(self._exchange.fetch_withdrawals, since_ms, "withdrawal"):
             drafts.append(self._transfer_draft(wd, "out"))
-        for entry in self._paginate(self._exchange.fetch_ledger, since_ms):
+        for entry in self._paginate(self._exchange.fetch_ledger, since_ms, "ledger entry"):
             staking = self._staking_draft(entry)
             if staking is not None:
                 drafts.append(staking)

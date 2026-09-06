@@ -154,6 +154,26 @@ def test_staking_ledger_entry_mapped_pending_fx():
     assert reward.fx_source == "pending"
 
 
+def test_pending_item_without_timestamp_skipped_with_warning():
+    # Pending deposits/withdrawals on OKX/Kraken routinely carry timestamp=None.
+    pending = {"id": "w-pending", "timestamp": None, "currency": "BTC", "amount": 1}
+    dated = {"id": "w1", "timestamp": 1_700_000_000_000, "currency": "BTC", "amount": 1}
+    adapter = _adapter(withdrawals=[[pending, dated]])
+
+    drafts = adapter.fetch_transactions(since=None)
+
+    assert [d.external_id for d in drafts] == ["wd:w1"]
+    assert "withdrawal w-pending skipped: no timestamp (pending?)" in adapter.warnings
+
+
+def test_fetch_balances_maps_totals_to_decimal():
+    adapter = _adapter(balance={"total": {"BTC": 0.5, "EUR": 1000}})
+
+    balances = adapter.fetch_balances()
+
+    assert balances == {"BTC": Decimal("0.5"), "EUR": Decimal(1000)}
+
+
 # -- pagination -----------------------------------------------------------------
 
 

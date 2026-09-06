@@ -35,8 +35,15 @@ def credentials(prefix: str) -> dict[str, str]:
     `os.environ` first, falling back to `.env` (parsed the same way
     `settings.env_status()` does). Never logs or returns anything beyond
     these keys — a missing key is simply absent from the result, never an
-    empty string. Passphrase is only required by OKX; callers for other
-    venues just never look it up.
+    empty string.
+
+    Passphrase is only ever required by OKX (`build_adapter`'s OKX branch is
+    the only reader of `f"{prefix}_API_PASSPHRASE"`). It's still looked up
+    here unconditionally rather than gated on venue — one shared read is
+    simpler than plumbing venue into this helper, and every other venue's
+    `build_adapter` branch just never reads the key back out of the dict it
+    gets, so an unused `_API_PASSPHRASE` env var for e.g. a Trading 212 or
+    Kraken account is harmless.
     """
     from_file = env_values()
     result: dict[str, str] = {}

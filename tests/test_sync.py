@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select
 
 from trade_ledger.adapters import base as adapters_base
+from trade_ledger.adapters.ccxt_adapter import CcxtAdapter
 from trade_ledger.enums import TxSource, TxType, Venue
 from trade_ledger.ledger import TxDraft
 from trade_ledger.models import Transaction
@@ -82,6 +83,54 @@ def test_sync_account_ok_run_then_second_sync_skips_duplicates(
     assert tx_count == 1
 
 
+class _FakeCcxtExchange:
+    """Minimal duck-typed ccxt exchange: one page of withdrawals, nothing else."""
+
+    def __init__(self, withdrawals: list[dict]):
+        self._withdrawals = withdrawals
+        self._served = False
+
+    def fetch_my_trades(self, since=None, limit=None):
+        return []
+
+    def fetch_deposits(self, since=None, limit=None):
+        return []
+
+    def fetch_withdrawals(self, since=None, limit=None):
+        if self._served:
+            return []
+        self._served = True
+        return self._withdrawals
+
+    def fetch_ledger(self, since=None, limit=None):
+        return []
+
+    def fetch_balance(self):
+        return {"total": {}}
+
+
+def test_sync_account_ccxt_pending_item_warns_but_stays_ok(session, account_factory, monkeypatch):
+    """A pending withdrawal (timestamp=None) must not fail the whole sync run
+    — it's dropped with a warning, everything else still gets upserted."""
+    fake = _FakeCcxtExchange(
+        [
+            {"id": "w-pending", "timestamp": None, "currency": "BTC", "amount": 1},
+            {"id": "w1", "timestamp": 1_700_000_000_000, "currency": "BTC", "amount": 1},
+        ]
+    )
+    adapter = CcxtAdapter("okx", "key", "secret", "pass", exchange=fake)
+    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
+    monkeypatch.setattr(adapters_base, "build_adapter", lambda acct, settings: adapter)
+
+    run = adapters_base.sync_account(session, account, Settings())
+
+    assert run.status == "ok"
+    assert run.added == 1
+    assert "withdrawal w-pending skipped: no timestamp (pending?)" in run.error
+    tx_count = session.execute(select(func.count()).select_from(Transaction)).scalar()
+    assert tx_count == 1
+
+
 def test_sync_account_adapter_error_rolls_back_and_records_message(
     session, account_factory, monkeypatch
 ):
@@ -91,9 +140,7 @@ def test_sync_account_adapter_error_rolls_back_and_records_message(
         def fetch_transactions(self, since):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        adapters_base, "build_adapter", lambda acct, settings: _FailingAdapter([])
-    )
+    monkeypatch.setattr(adapters_base, "build_adapter", lambda acct, settings: _FailingAdapter([]))
 
     run = adapters_base.sync_account(session, account, Settings())
 
