@@ -4,9 +4,8 @@ from trade_ledger import cli
 
 
 def test_stub_subcommands_print_not_yet_implemented(capsys):
-    for argv in (["sync", "--all"], ["report"]):
-        assert cli.main(argv) == 0
-        assert "not yet implemented" in capsys.readouterr().out
+    assert cli.main(["sync", "--all"]) == 0
+    assert "not yet implemented" in capsys.readouterr().out
 
 
 def test_import_reports_unknown_format(capsys):

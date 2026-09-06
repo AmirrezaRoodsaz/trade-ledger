@@ -1,10 +1,8 @@
 """`trade-ledger` command line entry point.
 
-`serve`, `import`, `export-notes`, `import-notes`, `prices --refresh` and
-`tax-year` are implemented here. `sync` and `report` are stubs that print
-"not yet implemented" — Tasks 3 and 13 fill them in; this file just
-gives the CLI surface its final shape now so those tasks only add a
-function body, not a new subcommand.
+`serve`, `import`, `export-notes`, `import-notes`, `prices --refresh`,
+`tax-year` and `report` are implemented here. `sync` is still a stub that
+prints "not yet implemented" — Task 3 fills it in.
 """
 
 from __future__ import annotations
@@ -131,7 +129,15 @@ def _cmd_tax_year(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    print("report: not yet implemented")
+    from datetime import date
+
+    from .reports.weekly import build_weekly
+
+    week_end = date.fromisoformat(args.week) if args.week else datetime.now(UTC).date()
+    db.init_db(get_settings().DB_PATH)
+    with db.SessionLocal() as session:
+        path = build_weekly(session, week_end, args.mode)
+    print(str(path))
     return 0
 
 
@@ -172,7 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_tax_year.set_defaults(func=_cmd_tax_year)
 
     p_report = sub.add_parser("report")
-    p_report.add_argument("--week", nargs="?", default=None)
+    p_report.add_argument("--week", nargs="?", default=None, help="week-end date, ISO format, default today")
+    p_report.add_argument("--mode", choices=["live", "paper", "demo", "all"], default="paper")
     p_report.set_defaults(func=_cmd_report)
 
     return parser
