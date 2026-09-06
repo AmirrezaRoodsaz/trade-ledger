@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
 
 from .settings import get_settings
@@ -75,13 +76,20 @@ def init_db(path: str | Path | None = None) -> None:
 
     if path == ":memory:":
         url = "sqlite:///:memory:"
+        # ponytail: StaticPool pins the whole engine to one connection. Plain
+        # SQLite `:memory:` is one DB per connection, and FastAPI's TestClient
+        # runs endpoints in a worker thread — without this, that thread opens
+        # a second, empty in-memory DB instead of reusing the test's tables.
+        engine = create_engine(
+            url, connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
     else:
         file_path = Path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.touch(exist_ok=True)
         url = f"sqlite:///{file_path}"
+        engine = create_engine(url, connect_args={"check_same_thread": False})
 
-    engine = create_engine(url, connect_args={"check_same_thread": False})
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
     # Deferred import: models.py imports Base from this module, and importing

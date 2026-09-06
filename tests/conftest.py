@@ -3,9 +3,11 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
 from trade_ledger import db
 from trade_ledger.enums import AccountKind, AssetClass, Mode, Venue
+from trade_ledger.main import create_app
 from trade_ledger.models import Account, Instrument
 
 
@@ -49,3 +51,16 @@ def instrument_factory(session):
         return instrument
 
     return make
+
+
+@pytest.fixture()
+def client(session):
+    """TestClient whose `get_session` dependency is overridden to the `session` fixture."""
+    app = create_app(db_path=":memory:")
+
+    def _override_get_session():
+        yield session
+
+    app.dependency_overrides[db.get_session] = _override_get_session
+    with TestClient(app) as test_client:
+        yield test_client
