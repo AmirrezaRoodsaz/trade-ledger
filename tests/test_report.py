@@ -15,10 +15,18 @@ os.environ.setdefault("MPLCONFIGDIR", tempfile.mkdtemp())
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from trade_ledger.enums import Direction, TradeStatus
-from trade_ledger.models import Trade
+import pytest
+
+from trade_ledger.enums import AssetClass, Direction, Mode, TradeStatus, TxSource, TxType
+from trade_ledger.models import Trade, Transaction
 from trade_ledger.reports.fmt import fmt_date, fmt_eur, fmt_pct, fmt_r
-from trade_ledger.reports.weekly import build_weekly
+from trade_ledger.reports.weekly import (
+    _bar,
+    _open_crypto_lots,
+    _open_trades,
+    _tax_meters,
+    build_weekly,
+)
 
 RISK = Decimal(50)
 
@@ -89,6 +97,89 @@ def test_build_weekly_on_empty_db_still_produces_a_pdf(tmp_path, monkeypatch, se
     path = build_weekly(session, date(2026, 9, 6), "paper")
     assert path.is_file()
     assert path.stat().st_size > 1_000
+
+
+# --- populated open trades / open lots / tax meters ------------------------
+
+
+@pytest.fixture()
+def live_and_paper(session, account_factory, instrument_factory):
+    """One live account holding a crypto lot bought well over 12 months
+    before the report's `week_end`, and one open trade on a paper account.
+    """
+    live = account_factory(mode=Mode.LIVE)
+    paper = account_factory(mode=Mode.PAPER)
+    crypto = instrument_factory(symbol="BTC", asset_class=AssetClass.CRYPTO)
+
+    session.add(
+        Transaction(
+            account_id=live.id,
+            instrument_id=crypto.id,
+            type=TxType.BUY,
+            ts=datetime(2024, 1, 1, 12, tzinfo=UTC),
+            quantity=Decimal("0.1"),
+            amount_eur=Decimal(4000),
+            source=TxSource.MANUAL,
+        )
+    )
+    open_trade = Trade(
+        account_id=paper.id,
+        instrument_id=crypto.id,
+        direction=Direction.LONG,
+        status=TradeStatus.OPEN,
+        risk_eur=Decimal(50),
+        planned_entry=Decimal(100),
+        planned_stop=Decimal(95),
+        opened_ts=datetime(2026, 9, 1, 10, tzinfo=UTC),
+    )
+    session.add(open_trade)
+    session.commit()
+    return {"live": live, "paper": paper, "crypto": crypto, "open_trade": open_trade}
+
+
+def test_open_trades_reads_symbol_and_planned_fields(session, live_and_paper):
+    rows = _open_trades(session, "paper")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "BTC"
+    assert row["direction"] == "long"
+    assert row["entry"] == Decimal(100)  # not yet opened -> falls back to planned_entry
+    assert row["stop"] == Decimal(95)
+    assert row["risk"] == Decimal(50)
+    assert row["ref"] == f"#{live_and_paper['open_trade'].id}"
+
+
+def test_open_trades_mode_filter_excludes_other_modes(session, live_and_paper):
+    assert _open_trades(session, "live") == []
+
+
+def test_open_crypto_lots_days_to_12m_negative_for_an_old_lot(session, live_and_paper):
+    rows = _open_crypto_lots(session, date(2026, 9, 6))
+
+    assert len(rows) == 1
+    lot = rows[0]
+    assert lot["symbol"] == "BTC"
+    assert lot["qty"] == Decimal("0.1")
+    assert lot["acquired"] == date(2024, 1, 1)
+    # Bought > 12 months before week_end -> `_open_lots_table` renders "steuerfrei".
+    assert lot["days_to_12m"] < 0
+
+
+def test_tax_meters_reads_live_accounts_only(session, live_and_paper):
+    tax = _tax_meters(session, 2026)
+
+    assert tax["p23_limit"] == Decimal(1000)
+    assert tax["p20_limit"] == Decimal(1000)
+    assert tax["p23_used"] >= Decimal(0)
+    assert tax["p20_used"] >= Decimal(0)
+
+
+def test_bar_renders_a_20_wide_ascii_gauge():
+    assert _bar(Decimal(0), Decimal(1000)) == "[--------------------] 0,0 %"
+    assert _bar(Decimal(500), Decimal(1000)) == "[##########----------] 50,0 %"
+    assert _bar(Decimal(1000), Decimal(1000)) == "[####################] 100,0 %"
+    assert _bar(Decimal(1500), Decimal(1000)) == "[####################] 100,0 %"  # capped
 
 
 # --- API ---------------------------------------------------------------

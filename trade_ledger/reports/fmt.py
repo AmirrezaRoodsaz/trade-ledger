@@ -21,8 +21,12 @@ def _de(value: Decimal, decimals: int) -> str:
     """
     quant = Decimal(1).scaleb(-decimals)
     value = value.quantize(quant, rounding=ROUND_HALF_UP)
+    # Swap the thousands comma and decimal point: stash the comma behind a
+    # visible sentinel that can't appear in a formatted number, turn the
+    # point into the de-DE decimal comma, then turn the sentinel into the
+    # de-DE thousands point.
     text = f"{value:,.{decimals}f}"
-    return text.translate(str.maketrans({",": "", ".": ","})).replace("", ".")
+    return text.translate(str.maketrans({",": "#", ".": ","})).replace("#", ".")
 
 
 def fmt_eur(value: Decimal) -> str:

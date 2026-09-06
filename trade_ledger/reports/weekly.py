@@ -25,7 +25,6 @@ from fpdf import FPDF, XPos, YPos
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..api._common import mode_filter
 from ..engine import analytics
 from ..enums import AssetClass, TradeStatus
 from ..models import Account, Instrument, Trade, Transaction
@@ -55,10 +54,25 @@ _STATS_ROWS = [
 ]
 
 
+def _trades_in_mode(session: Session, mode: str, stmt=None):
+    """`stmt` (default: every `Trade`) restricted to `mode`'s accounts.
+
+    A local stand-in for `api._common.mode_filter`: that helper lives in the
+    `api` package, and importing it here would import `api/__init__`, whose
+    router auto-discovery imports `api/reports.py`, which imports this module
+    back — a circular import that only breaks a fresh process (`python -m
+    trade_ledger.cli report ...`), not `pytest`, where something else has
+    usually already finished importing `trade_ledger.api` first.
+    """
+    stmt = select(Trade) if stmt is None else stmt
+    account_ids = accounts_in_mode(session, mode)
+    return stmt if account_ids is None else stmt.where(Trade.account_id.in_(account_ids))
+
+
 def build_weekly(session: Session, week_end: date, mode: str) -> Path:
     """Build the report and write it under `DATA_DIR/exports/reports/`, returning its path."""
     week_start = week_end - timedelta(days=6)
-    trades = list(session.execute(mode_filter(select(Trade), mode)).scalars())
+    trades = list(session.execute(_trades_in_mode(session, mode)).scalars())
     week_trades = [
         t for t in trades if t.closed_ts is not None and week_start <= t.closed_ts.date() <= week_end
     ]
@@ -68,6 +82,11 @@ def build_weekly(session: Session, week_end: date, mode: str) -> Path:
     curve = analytics.equity_curve(trades)
     cal = analytics.calendar(trades, week_end.year, week_end.month)
     open_trades = _open_trades(session, mode)
+    # ponytail: `_open_crypto_lots` and `_tax_meters` (via `year_summary.summarize`)
+    # each replay the live accounts' full transaction history through `run_fifo`
+    # independently — two FIFO passes over the same data on every report. Fine at
+    # this vault's transaction volume; share one `FifoResult` between them if a
+    # report ever gets slow.
     open_lots = _open_crypto_lots(session, week_end)
     tax = _tax_meters(session, week_end.year)
 
@@ -102,7 +121,7 @@ def _symbol_map(session: Session, ids: set[int | None]) -> dict[int, str]:
 
 
 def _open_trades(session: Session, mode: str) -> list[dict]:
-    stmt = mode_filter(select(Trade).where(Trade.status == TradeStatus.OPEN), mode)
+    stmt = _trades_in_mode(session, mode, select(Trade).where(Trade.status == TradeStatus.OPEN))
     trades = list(session.execute(stmt).scalars())
     symbols = _symbol_map(session, {t.instrument_id for t in trades})
     return [
@@ -120,10 +139,13 @@ def _open_trades(session: Session, mode: str) -> list[dict]:
 
 
 def _open_crypto_lots(session: Session, week_end: date) -> list[dict]:
-    """Open crypto lots on live accounts, with the brief's simplified
-    days-to-tax-free figure (`365 - holding_days`) rather than `tax.fifo`'s
-    exact calendar-year-aware `over_one_year` check — good enough for a
-    week-to-week glance, not for the Anlage SO itself.
+    """Open crypto lots on live accounts.
+
+    # ponytail: `days_to_12m` is the brief's simplified `365 - holding_days`,
+    # not `tax.fifo`'s exact calendar-year-aware `over_one_year` (which uses
+    # `relativedelta(years=1)` and so is right about leap years). Good enough
+    # for a week-to-week glance; switch to `over_one_year` if this figure
+    # ever needs to be exact rather than indicative.
     """
     live_ids = accounts_in_mode(session, "live") or []
     if not live_ids:
