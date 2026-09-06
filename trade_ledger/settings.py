@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import dotenv_values
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -32,20 +31,26 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def _example_keys() -> list[str]:
-    """Key names declared in `.env.example`, comments and blank lines skipped."""
-    if not _ENV_EXAMPLE.exists():
-        return []
-    keys = []
-    for line in _ENV_EXAMPLE.read_text().splitlines():
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Tiny stdlib `key=value` parser — comments and blank lines skipped."""
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        keys.append(line.split("=", 1)[0].strip())
-    return keys
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _example_keys() -> list[str]:
+    """Key names declared in `.env.example`."""
+    return list(_parse_env_file(_ENV_EXAMPLE))
 
 
 def env_status() -> dict[str, bool]:
     """Presence (non-empty) of each `.env.example` key. Values are never returned."""
-    from_file = dotenv_values(_ENV_FILE) if _ENV_FILE.exists() else {}
+    from_file = _parse_env_file(_ENV_FILE)
     return {key: bool(from_file.get(key) or os.environ.get(key)) for key in _example_keys()}

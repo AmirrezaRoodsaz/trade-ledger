@@ -112,8 +112,14 @@ def test_init_db_seeds_schema_version(session):
     assert row.value == "1"
 
 
-def test_env_status_reports_booleans_only():
+def test_env_status_detects_presence(tmp_path, monkeypatch):
+    example = tmp_path / ".env.example"
+    example.write_text("SET_KEY=\nABSENT_KEY=\n")
+    env_file = tmp_path / ".env"
+    env_file.write_text("SET_KEY=abc123\n")
+    monkeypatch.setattr(settings, "_ENV_EXAMPLE", example)
+    monkeypatch.setattr(settings, "_ENV_FILE", env_file)
+
     status = settings.env_status()
-    assert status  # .env.example declares at least one key
-    assert all(isinstance(v, bool) for v in status.values())
-    assert "DB_PATH" in status
+
+    assert status == {"SET_KEY": True, "ABSENT_KEY": False}

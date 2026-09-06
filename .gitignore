@@ -5,7 +5,6 @@
 *.db
 data/
 exports/
-exports/*.pdf
 screenshots/
 notes_out/
 
