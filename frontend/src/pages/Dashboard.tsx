@@ -89,7 +89,14 @@ function Meter({ label, value, limit }: { label: string; value: string | null; l
           {eur(value)} / {eur(limit)}
         </span>
       </div>
-      <div className="mt-1 h-1 w-full rounded bg-surface2">
+      <div
+        className="mt-1 h-1 w-full rounded bg-surface2"
+        role="progressbar"
+        aria-label={label}
+        aria-valuenow={Number((share * 100).toFixed(1))}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
         <div
           className={`h-1 rounded ${over ? "bg-neg" : "bg-accent"}`}
           style={{ width: `${(share * 100).toFixed(1)}%` }}
@@ -190,7 +197,7 @@ export function Dashboard() {
                 const run = lastSync[account.id] ?? null;
                 if (run === null) return DASH;
                 if (run.status === "error") return <span className="text-neg">{run.error ?? "error"}</span>;
-                return `${run.status} · +${run.added} / ${run.skipped} skipped`;
+                return `${run.status} · +${num(run.added, 0)} / ${num(run.skipped, 0)} skipped`;
               },
             },
           ]}

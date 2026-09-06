@@ -162,6 +162,7 @@ function AccountsSection({ accounts, reload }: { accounts: Account[]; reload: ()
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const save = useAction();
   const sync = useAction();
+  const remove = useAction();
 
   const initial: AccountIn =
     editing === null || editing === "new"
@@ -202,6 +203,7 @@ function AccountsSection({ accounts, reload }: { accounts: Account[]; reload: ()
       )}
       <Err message={save.error} />
       <Err message={sync.error} />
+      <Err message={remove.error} />
       <DataTable
         rows={accounts}
         rowKey={(account) => account.id}
@@ -229,7 +231,9 @@ function AccountsSection({ accounts, reload }: { accounts: Account[]; reload: ()
                     <span className={run.status === "error" ? "text-neg" : "text-muted"}>
                       {run.status === "error"
                         ? (run.error ?? "error")
-                        : `+${run.added} / ${run.skipped} skipped · ${dateTime(run.started)}`}
+                        : `+${num(run.added, 0)} / ${num(run.skipped, 0)} skipped · ${dateTime(
+                            run.started,
+                          )}`}
                     </span>
                   )}
                   <button
@@ -247,6 +251,19 @@ function AccountsSection({ accounts, reload }: { accounts: Account[]; reload: ()
                   </button>
                   <button className="btn" onClick={() => setEditing(account)}>
                     Edit
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={remove.busy}
+                    onClick={() => {
+                      if (!window.confirm(`Delete account "${account.name}"?`)) return;
+                      void remove.run(async () => {
+                        await del(`/accounts/${account.id}`);
+                        reload();
+                      });
+                    }}
+                  >
+                    Delete
                   </button>
                 </div>
               );
@@ -714,10 +731,11 @@ function AppSettingsSection() {
             void save.run(async () => {
               await put<Setting[]>(
                 "/settings",
-                [STAGE_CAPITAL_PAPER, STAGE_CAPITAL_LIVE, NOTES_OUT_DIR].map((key) => ({
-                  key,
-                  value: field(key),
-                })),
+                [STAGE_CAPITAL_PAPER, STAGE_CAPITAL_LIVE, NOTES_OUT_DIR]
+                  // A blank input means "not set" — writing "" would store an
+                  // empty stage capital that reads back as a real value.
+                  .filter((key) => field(key).trim() !== "")
+                  .map((key) => ({ key, value: field(key).trim() })),
               );
               settings.reload();
             })
