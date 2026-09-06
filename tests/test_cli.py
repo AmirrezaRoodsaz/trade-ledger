@@ -1,12 +1,36 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from trade_ledger import cli
 
 
 def test_stub_subcommands_print_not_yet_implemented(capsys):
-    for argv in (["sync", "--all"], ["report"]):
-        assert cli.main(argv) == 0
-        assert "not yet implemented" in capsys.readouterr().out
+    assert cli.main(["sync", "--all"]) == 0
+    assert "not yet implemented" in capsys.readouterr().out
+
+
+def test_report_command_runs_in_a_fresh_process(tmp_path):
+    """Regression: `reports/weekly.py` used to import `api._common` at module
+    load time. That import pulls in `api/__init__`'s router auto-discovery,
+    which imports `api/reports.py`, which imports `build_weekly` back out of
+    the still-initializing `reports.weekly` module — a circular import. It
+    never showed up under pytest, where `trade_ledger.api` is already fully
+    imported (by the `client` fixture elsewhere) before anything imports
+    `reports.weekly` — only a fresh process running `report` first hit it.
+    """
+    env = {**os.environ, "DB_PATH": ":memory:", "DATA_DIR": str(tmp_path)}
+    result = subprocess.run(
+        [sys.executable, "-m", "trade_ledger.cli", "report", "--week", "2026-09-06"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "exports" / "reports" / "weekly-2026-09-06-paper.pdf").is_file()
 
 
 def test_import_reports_unknown_format(capsys):
