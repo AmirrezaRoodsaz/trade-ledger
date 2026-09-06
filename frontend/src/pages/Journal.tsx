@@ -84,7 +84,7 @@ function DailyNoteEditor({ day, onDay }: { day: string; onDay: (value: string) =
         </label>
         <button
           className="btn-accent"
-          disabled={save.busy}
+          disabled={save.busy || note.loading}
           onClick={() =>
             void save.run(async () => {
               await put<DailyNote>(`/daily-notes/${day}`, {

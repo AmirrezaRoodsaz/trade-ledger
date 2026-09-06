@@ -2,6 +2,7 @@ import { useState } from "react";
 import { get, post, useAction, useApi } from "../api/client";
 import { dec } from "../api/transactions";
 import { composeNotePre, plannedQty, type TradeIn } from "../api/trades";
+import { toNumber } from "../fmt";
 import {
   ASSET_CLASSES,
   type Account,
@@ -78,13 +79,18 @@ export function TradeForm({
 
   const derivedQty = plannedQty(dec(entry), dec(stop), dec(risk));
   const qty = qtyOverride ?? derivedQty;
-  const sameLevel = dec(entry) !== "" && dec(entry) === dec(stop);
+  // "100" and "100.0" are the same level; compare the numbers, not the text.
+  const entryValue = toNumber(dec(entry));
+  const stopValue = toNumber(dec(stop));
+  const sameLevel = entryValue !== null && entryValue === stopValue;
   const ready =
     accountId !== "" &&
     instrumentId !== "" &&
     entry.trim() !== "" &&
     stop.trim() !== "" &&
     risk.trim() !== "" &&
+    // No plan without a reason for it.
+    why.trim() !== "" &&
     !sameLevel;
 
   const reset = () => {
@@ -312,7 +318,7 @@ export function TradeForm({
       {sameLevel && <p className="text-neg">Stop must differ from entry.</p>}
 
       <div className="grid gap-3 lg:grid-cols-3">
-        <Field label="Why this trade">
+        <Field label="Why this trade (required)">
           <textarea
             className="field h-20"
             value={why}

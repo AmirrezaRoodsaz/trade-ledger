@@ -10,7 +10,7 @@ import {
   type TxFilters,
 } from "../api/transactions";
 import type { Instrument, Page, Transaction, TxType } from "../api/types";
-import { DASH, dateTime, num } from "../fmt";
+import { DASH, dateTime, num, toNumber } from "../fmt";
 import { DataTable } from "./DataTable";
 import { MoneyCell } from "./MoneyCell";
 
@@ -35,9 +35,9 @@ function emptyForm(): FormState {
     ts: toLocalInput(new Date().toISOString()),
     type: "buy",
     instrument_id: "",
-    quantity: "",
+    quantity: "0",
     price: "",
-    amount_eur: "",
+    amount_eur: "0",
     fee_eur: "",
     withholding_tax_eur: "",
     note: "",
@@ -107,6 +107,11 @@ function TransactionModal({
   onSave: () => void;
   onClose: () => void;
 }) {
+  // Every transaction type moves either an instrument or cash; a row that is
+  // zero on both is an empty row, which the blank-defaults-to-"0" path would
+  // otherwise let through.
+  const blank =
+    (toNumber(dec(form.quantity)) ?? 0) === 0 && (toNumber(dec(form.amount_eur)) ?? 0) === 0;
   return (
     <div className="fixed inset-0 z-10 flex items-start justify-center overflow-y-auto bg-black/40 p-8">
       <form
@@ -164,6 +169,7 @@ function TransactionModal({
             <input
               className="field"
               inputMode="decimal"
+              required
               value={form.quantity}
               onChange={(event) => setForm({ ...form, quantity: event.target.value })}
             />
@@ -182,6 +188,7 @@ function TransactionModal({
             <input
               className="field"
               inputMode="decimal"
+              required
               value={form.amount_eur}
               onChange={(event) => setForm({ ...form, amount_eur: event.target.value })}
             />
@@ -213,9 +220,10 @@ function TransactionModal({
             />
           </label>
         </div>
+        {blank && <p className="mt-2 text-neg">A transaction needs a quantity or an amount.</p>}
         {error !== null && <p className="mt-2 text-neg">{error}</p>}
         <div className="mt-4 flex gap-2">
-          <button className="btn-accent" type="submit" disabled={busy}>
+          <button className="btn-accent" type="submit" disabled={busy || blank}>
             Save
           </button>
           <button className="btn" type="button" onClick={onClose}>

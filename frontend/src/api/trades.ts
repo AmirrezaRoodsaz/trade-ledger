@@ -3,7 +3,8 @@
  * needs. Read rows reuse `Trade` from `types.ts`.
  */
 
-import { toNumber } from "../fmt";
+// Extension spelled out so `npm run check` can import this file under Node.
+import { toNumber } from "../fmt.ts";
 import type { Direction } from "./types";
 
 export const MISTAKES = [

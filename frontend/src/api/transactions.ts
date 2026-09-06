@@ -91,6 +91,8 @@ export function txQuery(accountId: number, filters: TxFilters): string {
   if (filters.type !== "") params.set("type", filters.type);
   if (filters.instrumentId !== "") params.set("instrument_id", filters.instrumentId);
   if (filters.from !== "") params.set("date_from", filters.from);
-  if (filters.to !== "") params.set("date_to", filters.to);
+  // A bare "2026-09-30" is midnight UTC, which drops that day's own rows —
+  // the end of the selected day is what the filter means.
+  if (filters.to !== "") params.set("date_to", `${filters.to}T23:59:59Z`);
   return params.toString();
 }

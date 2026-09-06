@@ -52,13 +52,13 @@ export function CalendarGrid({
   return (
     <>
       <div className="mb-3 flex items-center gap-2">
-        <button className="btn" onClick={() => onShift(-1)}>
+        <button className="btn" aria-label="Previous month" onClick={() => onShift(-1)}>
           ‹
         </button>
         <span className="min-w-40 text-center">
           {MONTHS[month - 1]} {year}
         </span>
-        <button className="btn" onClick={() => onShift(1)}>
+        <button className="btn" aria-label="Next month" onClick={() => onShift(1)}>
           ›
         </button>
       </div>
