@@ -47,18 +47,31 @@ def _trade_draft(rows: list[dict], refid: str) -> TxDraft:
     asset_amount = dec(asset_leg["amount"])
     fiat_ccy = _normalize_asset(fiat_leg["asset"])
     symbol = _normalize_asset(asset_leg["asset"])
-    fee_raw = abs(dec(fiat_leg["fee"])) + abs(dec(asset_leg["fee"]))
+    fiat_fee = abs(dec(fiat_leg["fee"]))
+    asset_fee = abs(dec(asset_leg["fee"]))
     tx_type = TxType.BUY if asset_amount > 0 else TxType.SELL
     ts = parse_utc(fiat_leg["time"])
 
+    fee_eur = Decimal(0)
+    fee = Decimal(0)
+    fee_ccy = None
+    fx_source = None
+
     if fiat_ccy == "EUR":
-        amount_eur, fee_eur, fee, fee_ccy, fx_source = (
-            abs(fiat_amount), fee_raw, Decimal(0), None, None,
-        )
+        amount_eur = abs(fiat_amount)
+        fee_eur = fiat_fee
     else:
-        amount_eur, fee_eur, fee, fee_ccy, fx_source = (
-            Decimal(0), Decimal(0), fee_raw, fiat_ccy, "pending",
-        )
+        amount_eur = Decimal(0)
+        fx_source = "pending"
+        if fiat_fee:
+            fee, fee_ccy = fiat_fee, fiat_ccy
+
+    # ponytail: a TxDraft has one fee slot (fee/fee_ccy). The fiat fee already
+    # has a home (fee_eur when EUR, else this slot) so the asset-leg fee
+    # (its own coin, e.g. BTC) only takes the slot if nothing else claimed
+    # it. Upgrade to a multi-fee model if a venue routinely charges both legs.
+    if asset_fee and not fee:
+        fee, fee_ccy, fx_source = asset_fee, symbol, "pending"
 
     return TxDraft(
         ts=ts,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from trade_ledger.enums import TxSource, TxType
 from trade_ledger.importers import IMPORTERS
-from trade_ledger.ledger import upsert_transactions
+from trade_ledger.ledger import cash_delta_eur, upsert_transactions
 
 FIXTURES = Path(__file__).parent / "fixtures" / "csv"
 
@@ -29,8 +29,9 @@ def test_trading212_importer():
 
     fee_row = next(d for d in result.drafts if d.external_id == "T212-008")
     assert fee_row.type == TxType.FEE
-    assert fee_row.fee_eur == Decimal("0.60")
-    assert fee_row.amount_eur == Decimal(0)
+    assert fee_row.amount_eur == Decimal("0.60")  # FEE's cash effect reads amount_eur
+    assert fee_row.fee_eur == Decimal(0)
+    assert cash_delta_eur(fee_row) == Decimal("-0.60")
 
 
 def test_okx_importer():
@@ -45,6 +46,9 @@ def test_okx_importer():
     assert buy.amount_eur == Decimal("4200.0000")
     assert buy.fee_eur == Decimal("4.20")
     assert buy.instrument_symbol == "BTC"
+    # fee is already EUR: don't also keep it in fee/fee_ccy (matches the other importers)
+    assert buy.fee == Decimal(0)
+    assert buy.fee_ccy is None
 
     pending = next(d for d in result.drafts if d.external_id == "OKX-TRADE-3")
     assert pending.fx_source == "pending"
@@ -53,7 +57,7 @@ def test_okx_importer():
 
 def test_kraken_importer():
     result = IMPORTERS["kraken"](_load("kraken"))
-    assert len(result.drafts) == 5
+    assert len(result.drafts) == 6
     assert len(result.errors) == 1
     assert result.errors[0].row == 8  # REF6's unpaired trade leg
 
@@ -69,10 +73,19 @@ def test_kraken_importer():
     assert reward.fx_source == "pending"
     assert reward.instrument_symbol == "ETH"  # XETH normalised
 
+    # REF7: EUR fiat leg with zero fee, BTC asset leg with a nonzero fee —
+    # the asset-leg fee can't be expressed in EUR, so it goes to fee/fee_ccy
+    # pending rather than being summed into fee_eur.
+    asset_fee_trade = next(d for d in result.drafts if d.external_id == "REF7")
+    assert asset_fee_trade.fee_eur == Decimal(0)
+    assert asset_fee_trade.fee == Decimal("0.0001000000")
+    assert asset_fee_trade.fee_ccy == "BTC"
+    assert asset_fee_trade.fx_source == "pending"
+
 
 def test_binance_importer():
     result = IMPORTERS["binance"](_load("binance"))
-    assert len(result.drafts) == 5
+    assert len(result.drafts) == 6
     assert len(result.errors) == 1
     assert result.errors[0].row == 9  # Operation "Foo" is unrecognised
 
@@ -86,6 +99,13 @@ def test_binance_importer():
     airdrop = next(d for d in result.drafts if d.type == TxType.AIRDROP)
     assert airdrop.instrument_symbol == "BNB"
     assert airdrop.fx_source == "pending"
+
+    # A `Fee` row with no Buy/Sell leg at that timestamp used to be silently
+    # dropped; it must now surface as its own TxType.FEE draft.
+    fee_only = [d for d in result.drafts if d.type == TxType.FEE]
+    assert len(fee_only) == 1
+    assert fee_only[0].amount_eur == Decimal("1.00000000")
+    assert fee_only[0].fee_eur == Decimal(0)
 
 
 def test_generic_importer():
@@ -134,6 +154,21 @@ def test_preview_endpoint_returns_drafts_errors_and_duplicate_count(client):
     assert len(body["errors"]) == 1
     assert body["duplicates"] == 0
     assert body["drafts"][0]["amount_eur"] == "4200.0000"  # Money serialises as a string
+
+
+def test_preview_endpoint_reports_duplicates_already_in_the_db(client):
+    account = _create_account(client)
+    files = {"file": ("okx.csv", _load("okx"), "text/csv")}
+    data = {"format": "okx", "account_id": account["id"]}
+
+    first_preview = client.post("/api/imports/preview", files=files, data=data).json()
+    client.post(
+        "/api/imports/commit",
+        json={"account_id": account["id"], "drafts": first_preview["drafts"]},
+    )
+
+    second_preview = client.post("/api/imports/preview", files=files, data=data).json()
+    assert second_preview["duplicates"] == 3
 
 
 def test_preview_endpoint_rejects_unknown_format(client):

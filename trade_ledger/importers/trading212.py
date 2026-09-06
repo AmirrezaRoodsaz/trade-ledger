@@ -97,14 +97,13 @@ def parse(data: bytes) -> ImportResult:
                     withholding_tax_eur = withholding_raw
 
             # "Currency conversion fee" as its own Action row has no trade to
-            # attach to: the row's own amount *is* the fee (ponytail: folded
-            # here rather than modelled as amount_eur, per the brief).
+            # attach to: the row's own amount *is* the fee. ledger.cash_delta_eur
+            # charges TxType.FEE via amount_eur (not fee_eur) — so that's what
+            # carries the amount here; fee_eur is for a fee riding on a trade.
             fee_eur = conversion_fee
             row_amount_eur = amount_eur
             if tx_type == TxType.FEE:
-                fee_eur = amount_eur
-                row_amount_eur = Decimal(0)
-                fx_source = None
+                fee_eur = Decimal(0)
 
             drafts.append(
                 TxDraft(

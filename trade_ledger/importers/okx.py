@@ -96,7 +96,10 @@ def parse(data: bytes) -> ImportResult:
                 amount_eur = Decimal(0)
                 fx_source = "pending"
 
-            fee_eur = fee_raw if fee_ccy and fee_ccy.upper() == "EUR" else Decimal(0)
+            is_eur_fee = bool(fee_ccy) and fee_ccy.upper() == "EUR"
+            fee_eur = fee_raw if is_eur_fee else Decimal(0)
+            fee_kept = Decimal(0) if is_eur_fee else fee_raw
+            fee_ccy_kept = None if is_eur_fee else fee_ccy
 
             drafts.append(
                 TxDraft(
@@ -105,8 +108,8 @@ def parse(data: bytes) -> ImportResult:
                     quantity=quantity,
                     price=price,
                     price_ccy=quote_ccy,
-                    fee=fee_raw,
-                    fee_ccy=fee_ccy,
+                    fee=fee_kept,
+                    fee_ccy=fee_ccy_kept,
                     fee_eur=fee_eur,
                     amount_eur=amount_eur,
                     fx_source=fx_source,

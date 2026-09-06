@@ -74,6 +74,25 @@ def _trade_draft(ts, legs: list[dict], fee_amount: Decimal, fee_ccy: str | None)
     )
 
 
+def _fee_only_draft(ts, fee_amount: Decimal, fee_ccy: str | None) -> TxDraft:
+    """A `Fee` row with no matching Buy/Sell leg at that timestamp — Binance
+    charges these standalone (e.g. a BNB fee-burn credit). `TxType.FEE`'s
+    cash effect is read off `amount_eur` (see `ledger.cash_delta_eur`), not
+    `fee_eur`, so that's where the resolved amount goes.
+    """
+    if fee_ccy == "EUR":
+        return TxDraft(ts=ts, type=TxType.FEE, amount_eur=fee_amount, source=TxSource.CSV)
+    return TxDraft(
+        ts=ts,
+        type=TxType.FEE,
+        amount_eur=Decimal(0),
+        fee=fee_amount,
+        fee_ccy=fee_ccy,
+        fx_source="pending",
+        source=TxSource.CSV,
+    )
+
+
 def _other_draft(ts, row: dict) -> TxDraft:
     op = row["Operation"]
     coin = row["Coin"].strip().upper()
@@ -131,6 +150,8 @@ def parse(data: bytes) -> ImportResult:
 
             if trade_legs:
                 drafts.append(_trade_draft(ts, trade_legs, fee_amount, fee_ccy))
+            elif fee_legs:
+                drafts.append(_fee_only_draft(ts, fee_amount, fee_ccy))
             for row in other_rows:
                 drafts.append(_other_draft(ts, row))
         except (KeyError, ValueError, ArithmeticError) as exc:
