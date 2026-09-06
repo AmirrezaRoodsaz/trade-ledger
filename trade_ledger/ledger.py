@@ -108,6 +108,12 @@ class TxDraft(BaseModel):
         return self
 
 
+def _default_price_source(asset_class: AssetClass | str, price_symbol: str | None) -> str | None:
+    if price_symbol:
+        return "stooq"
+    return "bitstamp" if asset_class == AssetClass.CRYPTO else None
+
+
 def get_or_create_instrument(
     session: Session,
     symbol: str,
@@ -121,7 +127,10 @@ def get_or_create_instrument(
     absent. On an existing row, backfill `isin`/`name`/`price_symbol` only
     where that field is still `None` — never overwrite a value someone (or
     an earlier import) already set. `price_source` is set to `"stooq"`
-    whenever a `price_symbol` is newly set (create or backfill).
+    whenever a `price_symbol` is newly set (create or backfill), and to
+    `"bitstamp"` for crypto without one — Bitstamp derives its `<sym>eur`
+    pair from the plain symbol, so no `price_symbol` is needed. A crypto row
+    that predates this rule gets its `price_source` backfilled here too.
     """
     instrument = session.execute(
         select(Instrument).where(
@@ -136,6 +145,8 @@ def get_or_create_instrument(
         if price_symbol is not None and instrument.price_symbol is None:
             instrument.price_symbol = price_symbol
             instrument.price_source = "stooq"
+        if instrument.price_source is None and instrument.asset_class == AssetClass.CRYPTO:
+            instrument.price_source = "bitstamp"
         return instrument
     instrument = Instrument(
         symbol=symbol,
@@ -143,7 +154,7 @@ def get_or_create_instrument(
         isin=isin,
         name=name,
         price_symbol=price_symbol,
-        price_source="stooq" if price_symbol else None,
+        price_source=_default_price_source(asset_class, price_symbol),
         quote_ccy=quote_ccy,
     )
     session.add(instrument)

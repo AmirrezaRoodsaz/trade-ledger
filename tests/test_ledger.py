@@ -153,6 +153,23 @@ def test_get_or_create_instrument_sets_then_backfills_only_none_fields(session):
     assert again.price_symbol == "aapl.us"  # not overwritten — already set
 
 
+def test_crypto_instrument_defaults_to_bitstamp_and_backfills(session):
+    """Without a price source nothing values a crypto holding. Bitstamp builds
+    its `<sym>eur` pair from the plain symbol, so no `price_symbol` is needed.
+    """
+    created = get_or_create_instrument(session, "SOL", AssetClass.CRYPTO)
+    assert created.price_source == "bitstamp"
+    assert created.price_symbol is None
+
+    # a row from before this rule gets its source backfilled on next touch
+    created.price_source = None
+    session.flush()
+    assert get_or_create_instrument(session, "SOL", AssetClass.CRYPTO).price_source == "bitstamp"
+
+    # non-crypto without a price_symbol still has no source to fetch from
+    assert get_or_create_instrument(session, "VWCE", AssetClass.ETF).price_source is None
+
+
 def test_cash_balance_sums_deltas(session, account_factory):
     account = account_factory()
     drafts = [
