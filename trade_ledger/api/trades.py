@@ -3,19 +3,21 @@ from __future__ import annotations
 import calendar as calendar_mod
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import Field, field_validator
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
-from ..enums import Direction, Mistake, Mode, TradeStatus
+from ..engine.mae_mfe import compute_excursions
+from ..enums import Direction, Mistake, TradeStatus
 from ..journal import (
     ManualFill,
     StatusError,
@@ -26,9 +28,11 @@ from ..journal import (
     review_trade,
     suggest_fills,
 )
-from ..models import Account, Instrument, PlaybookVersion, Trade
+from ..models import Instrument, Trade
+from ..prices.service import candles as fetch_candles
+from ..prices.service import ensure_prices
 from ..settings import get_settings
-from ._common import get_account_or_404
+from ._common import get_account_or_404, get_instrument_or_404, mode_filter, trade_filters
 from .schemas import BaseModel, Money, Page, UTCDatetime
 from .transactions import TransactionOut
 
@@ -116,6 +120,39 @@ class CalendarDay(BaseModel):
     r: Money
 
 
+class ExcursionsOut(BaseModel):
+    mae_eur: Money
+    mfe_eur: Money
+    mae_r: Money | None
+    mfe_r: Money | None
+    resolution: str
+
+
+class RecomputeOut(BaseModel):
+    updated: int
+    skipped: int
+
+
+class ChartCandle(BaseModel):
+    time: str
+    open: Money | None
+    high: Money | None
+    low: Money | None
+    close: Money | None
+
+
+class ChartMarker(BaseModel):
+    time: str
+    kind: str
+    price: Money
+
+
+class ChartOut(BaseModel):
+    candles: list[ChartCandle]
+    markers: list[ChartMarker]
+    resolution: str
+
+
 def _guard(fn, *args, **kwargs):
     """Run a `journal` call and translate its two failure modes into the
     status codes the API contract promises: 409 for a lifecycle guard, 422
@@ -141,17 +178,6 @@ def _fill_args(payload: FillsIn) -> dict:
     return {"fill_ids": payload.fill_ids, "manual": manual}
 
 
-def _mode_filter(stmt: Select, mode: str) -> Select:
-    """Trades never mix modes unless `mode=all` is explicit. A trade's mode
-    is its account's.
-    """
-    if mode == "all":
-        return stmt
-    if mode not in set(Mode):
-        raise HTTPException(status_code=422, detail=f"unknown mode: {mode}")
-    return stmt.where(Trade.account_id.in_(select(Account.id).where(Account.mode == mode)))
-
-
 @router.get("/trades", response_model=Page[TradeOut])
 def list_trades(
     account_id: list[int] | None = Query(None),
@@ -166,28 +192,18 @@ def list_trades(
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
 ):
-    stmt = _mode_filter(select(Trade), mode)
-    if account_id:
-        stmt = stmt.where(Trade.account_id.in_(account_id))
+    stmt = trade_filters(
+        select(Trade),
+        mode=mode,
+        account_id=account_id,
+        playbook_id=playbook_id,
+        instrument_id=instrument_id,
+        tag=tag,
+        date_from=date_from,
+        date_to=date_to,
+    )
     if status is not None:
         stmt = stmt.where(Trade.status == status)
-    if playbook_id is not None:
-        stmt = stmt.where(
-            Trade.playbook_version_id.in_(
-                select(PlaybookVersion.id).where(PlaybookVersion.playbook_id == playbook_id)
-            )
-        )
-    if instrument_id is not None:
-        stmt = stmt.where(Trade.instrument_id == instrument_id)
-    if tag is not None:
-        # ponytail: tags are a JSON list in a text column; a LIKE on the
-        # quoted name is exact enough. Move to a join table if tags ever need
-        # renaming or counting.
-        stmt = stmt.where(Trade.tags.like(f'%"{tag}"%'))
-    if date_from is not None:
-        stmt = stmt.where(Trade.opened_ts >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(Trade.opened_ts <= date_to)
 
     total = session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (
@@ -210,7 +226,7 @@ def trades_calendar(
     last_day = calendar_mod.monthrange(year, month)[1]
     end = datetime(year, month, last_day, 23, 59, 59, tzinfo=UTC)
 
-    stmt = _mode_filter(select(Trade), mode).where(
+    stmt = mode_filter(select(Trade), mode).where(
         Trade.status == TradeStatus.CLOSED, Trade.closed_ts >= start, Trade.closed_ts <= end
     )
     days: dict[str, CalendarDay] = {}
@@ -229,6 +245,34 @@ def create_trade(payload: TradeIn, session: Session = Depends(get_session)):
     if session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
     return _guard(plan_trade, session, payload.model_dump())
+
+
+def _excursion_window(trade: Trade) -> tuple[date, date]:
+    """The trade's life as a date range: opened day to closed day, or today
+    for a still-open trade.
+    """
+    end = trade.closed_ts.date() if trade.closed_ts is not None else datetime.now(UTC).date()
+    return trade.opened_ts.date(), end
+
+
+@router.post("/trades/excursions/recompute", response_model=RecomputeOut)
+def recompute_excursions(session: Session = Depends(get_session)):
+    """MAE/MFE for every closed trade that has cached candles. Registered
+    ahead of `/trades/{trade_id}` so "excursions" is never captured as an id.
+    """
+    updated = skipped = 0
+    trades = session.execute(select(Trade).where(Trade.status == TradeStatus.CLOSED)).scalars()
+    for trade in trades:
+        instrument = session.get(Instrument, trade.instrument_id)
+        start, end = _excursion_window(trade)
+        result = compute_excursions(trade, fetch_candles(session, instrument, start, end))
+        if result is None:
+            skipped += 1
+            continue
+        trade.mae_eur, trade.mfe_eur = result
+        updated += 1
+    session.commit()
+    return RecomputeOut(updated=updated, skipped=skipped)
 
 
 @router.get("/trades/{trade_id}", response_model=TradeOut)
@@ -298,6 +342,65 @@ def post_cancel_trade(trade_id: int, session: Session = Depends(get_session)):
 def get_suggest_fills(trade_id: int, session: Session = Depends(get_session)):
     trade = _get_trade_or_404(session, trade_id)
     return suggest_fills(session, trade)
+
+
+@router.post("/trades/{trade_id}/excursions", response_model=ExcursionsOut)
+def post_trade_excursions(trade_id: int, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    if trade.opened_ts is None:
+        raise HTTPException(status_code=409, detail="trade has not been opened")
+    instrument = session.get(Instrument, trade.instrument_id)
+    start, end = _excursion_window(trade)
+    result = compute_excursions(trade, fetch_candles(session, instrument, start, end))
+    if result is None:
+        raise HTTPException(status_code=404, detail="no cached candles for this trade's dates")
+    trade.mae_eur, trade.mfe_eur = result
+    session.commit()
+    return ExcursionsOut(
+        mae_eur=trade.mae_eur,
+        mfe_eur=trade.mfe_eur,
+        mae_r=trade.mae_r,
+        mfe_r=trade.mfe_r,
+        resolution="1d",
+    )
+
+
+@router.get("/trades/{trade_id}/chart", response_model=ChartOut)
+def get_trade_chart(trade_id: int, padding_days: int = 20, session: Session = Depends(get_session)):
+    trade = _get_trade_or_404(session, trade_id)
+    if trade.opened_ts is None:
+        raise HTTPException(status_code=409, detail="trade has not been opened")
+    instrument = get_instrument_or_404(session, trade.instrument_id)
+    start, end = _excursion_window(trade)
+    padding = timedelta(days=padding_days)
+    start, end = start - padding, end + padding
+
+    if instrument.price_source:
+        try:
+            ensure_prices(session, instrument, start, end)
+        except httpx.HTTPError:
+            pass  # ponytail: offline/rate-limited fetch — fall back to whatever is cached
+
+    rows = fetch_candles(session, instrument, start, end)
+    out_candles = [
+        ChartCandle(time=c.date.isoformat(), open=c.open, high=c.high, low=c.low, close=c.close)
+        for c in rows
+    ]
+
+    markers = []
+    opened_day = trade.opened_ts.date().isoformat()
+    if trade.avg_entry is not None:
+        markers.append(ChartMarker(time=opened_day, kind="entry", price=trade.avg_entry))
+    if trade.avg_exit is not None and trade.closed_ts is not None:
+        markers.append(
+            ChartMarker(time=trade.closed_ts.date().isoformat(), kind="exit", price=trade.avg_exit)
+        )
+    if trade.planned_stop is not None:
+        markers.append(ChartMarker(time=opened_day, kind="stop", price=trade.planned_stop))
+    if trade.planned_target is not None:
+        markers.append(ChartMarker(time=opened_day, kind="target", price=trade.planned_target))
+
+    return ChartOut(candles=out_candles, markers=markers, resolution="1d")
 
 
 def _stored_name(filename: str) -> str:

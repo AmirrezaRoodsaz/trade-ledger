@@ -123,6 +123,7 @@ class Trading212Adapter:
         )
         self._sleep = sleep_fn
         self._instruments_cache: dict[str, dict] | None = None
+        self.warnings: list[str] = []  # Adapter protocol; T212 never has any
 
     def close(self) -> None:
         self._client.close()

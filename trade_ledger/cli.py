@@ -1,8 +1,8 @@
 """`trade-ledger` command line entry point.
 
-`serve`, `import`, `export-notes`, `import-notes` and `prices --refresh` are
-implemented here. `sync`, `tax-year` and `report` are stubs that print
-"not yet implemented" — Tasks 3, 12 and 13 fill them in; this file just
+`serve`, `import`, `export-notes`, `import-notes`, `prices --refresh` and
+`tax-year` are implemented here. `sync` and `report` are stubs that print
+"not yet implemented" — Tasks 3 and 13 fill them in; this file just
 gives the CLI surface its final shape now so those tasks only add a
 function body, not a new subcommand.
 """
@@ -122,7 +122,11 @@ def _cmd_prices(args: argparse.Namespace) -> int:
 
 
 def _cmd_tax_year(args: argparse.Namespace) -> int:
-    print("tax-year: not yet implemented")
+    from .tax.cli import print_year
+
+    db.init_db(get_settings().DB_PATH)
+    with db.SessionLocal() as session:
+        print_year(session, args.year, args.mode)
     return 0
 
 
@@ -164,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_tax_year = sub.add_parser("tax-year")
     p_tax_year.add_argument("year", type=int)
+    p_tax_year.add_argument("--mode", choices=["live", "paper", "demo", "all"], default="live")
     p_tax_year.set_defaults(func=_cmd_tax_year)
 
     p_report = sub.add_parser("report")
