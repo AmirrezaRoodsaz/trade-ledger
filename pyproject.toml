@@ -38,10 +38,10 @@ packages = ["trade_ledger"]
 line-length = 100
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI's `Depends(...)`/`Query(...)` default-argument pattern is the
-# documented way to declare dependencies — not the mutable-default footgun
-# B008 warns about.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+# FastAPI's `Depends(...)`/`Query(...)`/`File(...)`/`Form(...)` default-argument
+# pattern is the documented way to declare dependencies and multipart form
+# fields — not the mutable-default footgun B008 warns about.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File", "fastapi.Form"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

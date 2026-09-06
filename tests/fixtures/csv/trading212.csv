@@ -1,0 +1,9 @@
+Action,Time,ISIN,Ticker,Name,No. of shares,Price / share,Currency (Price / share),Exchange rate,Result,Currency (Result),Total,Currency (Total),Withholding tax,Currency (Withholding tax),Stamp duty reserve tax,Currency conversion fee,Notes,ID
+Market buy,2026-01-05 09:30:00,US0378331005,AAPL,Apple Inc,1.5,150.00,USD,1.10,,,204.55,EUR,,,,0.45,,T212-001
+Limit sell,2026-01-10 14:00:00,IE00B4L5Y983,IWDA,iShares Core MSCI World UCITS ETF,0.5,80.00,USD,,,,36.36,EUR,,,,0.00,,T212-002
+Dividend,2026-01-15 08:00:00,US0378331005,AAPL,Apple Inc,,,,,,,8.50,EUR,1.28,EUR,,0.00,,T212-003
+Deposit,2026-01-01 00:00:00,,,,,,,,,,500.00,EUR,,,,0.00,,T212-004
+Interest on cash,2026-01-20 00:00:00,,,,,,,,,,0.75,EUR,,,,0.00,,T212-005
+Withdrawal,2026-01-25 00:00:00,,,,,,,,,,100.00,EUR,,,,0.00,,T212-006
+Deposit,2026-01-30 00:00:00,,,,,,,,,,not-a-number,EUR,,,,0.00,,T212-007
+Currency conversion fee,2026-01-31 00:00:00,,,,,,,,,,0.60,EUR,,,,0.00,,T212-008
