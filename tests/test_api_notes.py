@@ -35,7 +35,7 @@ def test_export_then_import_round_trip(tmp_path, client, account_factory, instru
         "/api/notes/import", json={"dir": str(tmp_path), "account_id": account.id}
     )
     assert imp.status_code == 200, imp.text
-    assert imp.json() == {"created": 0, "updated": 1}
+    assert imp.json() == {"created": 0, "updated": 1, "skipped": 0}
 
     refreshed = client.get(f"/api/trades/{trade['id']}").json()
     assert refreshed["status"] == "cancelled"

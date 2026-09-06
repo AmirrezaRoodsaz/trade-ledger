@@ -70,6 +70,12 @@ _FRONTMATTER_DECIMAL_KEYS = (
     "entry", "stop", "target", "quantity", "size_eur", "fees_eur", "risk_eur", "result_eur",
 )
 
+# Characters that break (or get silently reinterpreted by) a YAML plain
+# scalar: mapping/flow indicators, quotes, comments, anchors/aliases/tags,
+# folding indicators.
+_YAML_SPECIAL_CHARS = set(':#"\'[]{},&*!|>%@`')
+_FILENAME_UNSAFE = ("/", "\\", ":")
+
 
 def _decimal_str(value: Decimal | None) -> str:
     return "" if value is None else format(value, "f")
@@ -79,9 +85,28 @@ def _date_str(value: datetime | None) -> str:
     return "" if value is None else value.date().isoformat()
 
 
-def _blank_or(value: str) -> str:
-    """Template convention: an empty text field renders as `""`, not blank."""
-    return value if value else '""'
+def _yaml_scalar(value: str) -> str:
+    """A YAML-safe scalar for a frontmatter string field.
+
+    Double-quoted (with `\\` and `"` escaped) whenever a plain scalar would
+    break parsing or silently lose meaning — empty, containing any of
+    `: # " ' [ ] { } , & * ! | > % @` \\``, or with leading/trailing
+    whitespace. Plain otherwise, matching the template's unquoted look for
+    the common case (`venue: Trading 212`).
+    """
+    needs_quoting = (
+        not value or value != value.strip() or any(c in _YAML_SPECIAL_CHARS for c in value)
+    )
+    if not needs_quoting:
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _safe_filename_part(value: str) -> str:
+    for char in _FILENAME_UNSAFE:
+        value = value.replace(char, "-")
+    return value
 
 
 def _strategy_label(trade: Trade) -> str:
@@ -113,14 +138,14 @@ def render(trade: Trade, account: Account, instrument: Instrument) -> str:
 
     fields = {
         "trade": "true",
-        "id": trade.external_ref or "",
-        "mode": _MODE_BY_ACCOUNT_MODE[Mode(account.mode)],
-        "status": str(trade.status),
-        "venue": account.name,
-        "market": _MARKET_BY_ASSET_CLASS[AssetClass(instrument.asset_class)],
-        "symbol": instrument.symbol,
-        "direction": str(trade.direction),
-        "strategy": _blank_or(_strategy_label(trade)),
+        "id": _yaml_scalar(trade.external_ref or ""),
+        "mode": _yaml_scalar(_MODE_BY_ACCOUNT_MODE[Mode(account.mode)]),
+        "status": _yaml_scalar(str(trade.status)),
+        "venue": _yaml_scalar(account.name),
+        "market": _yaml_scalar(_MARKET_BY_ASSET_CLASS[AssetClass(instrument.asset_class)]),
+        "symbol": _yaml_scalar(instrument.symbol),
+        "direction": _yaml_scalar(str(trade.direction)),
+        "strategy": _yaml_scalar(_strategy_label(trade)),
         "opened": _date_str(trade.opened_ts),
         "closed": _date_str(trade.closed_ts),
         "entry": _decimal_str(entry),
@@ -132,7 +157,7 @@ def render(trade: Trade, account: Account, instrument: Instrument) -> str:
         "risk_eur": _decimal_str(trade.risk_eur),
         "result_eur": _decimal_str(trade.result_eur),
         "adherence": adherence,
-        "mistake": _blank_or(trade.mistake or ""),
+        "mistake": _yaml_scalar(trade.mistake or ""),
     }
 
     lines = ["---"]
@@ -143,7 +168,7 @@ def render(trade: Trade, account: Account, instrument: Instrument) -> str:
     tags = json.loads(trade.tags or "[]")
     if tags:
         lines.append("tags:")
-        lines.extend(f"  - {tag}" for tag in tags)
+        lines.extend(f"  - {_yaml_scalar(tag)}" for tag in tags)
     else:
         lines.append("tags: []")
     lines.append("---")
@@ -189,7 +214,11 @@ def export_all(session: Session, out_dir: str | Path, mode: str | None = None) -
         account = session.get(Account, trade.account_id)
         instrument = session.get(Instrument, trade.instrument_id)
         ref = trade.external_ref or f"trade-{trade.id}"
-        path = out / f"{ref} {instrument.symbol} {trade.direction}.md"
+        filename = (
+            f"{_safe_filename_part(ref)} {_safe_filename_part(instrument.symbol)} "
+            f"{_safe_filename_part(str(trade.direction))}.md"
+        )
+        path = out / filename
         path.write_text(render(trade, account, instrument))
         written.append(path)
     return written
@@ -220,6 +249,9 @@ def parse(text: str) -> dict:
 
     for key in _FRONTMATTER_DECIMAL_KEYS:
         value = data.get(key)
+        # ponytail: yaml.safe_load already turned an unquoted number into
+        # int/float — str() first so Decimal builds from the exact digits
+        # PyYAML saw rather than from a float's binary rounding.
         data[key] = None if value in (None, "") else Decimal(str(value))
 
     for key in ("opened", "closed"):
@@ -264,16 +296,19 @@ def _apply_parsed(trade: Trade, data: dict) -> None:
         trade.planned_qty = data.get("quantity")
 
 
-def import_dir(session: Session, dir: str | Path, account_id: int) -> tuple[int, int]:
+def import_dir(session: Session, dir: str | Path, account_id: int) -> tuple[int, int, int]:
     """Read every `*.md` note in `dir`, matching on `external_ref` (the
     note's `id`). Creates a new (planned-shaped) trade for an id not already
-    in the DB, otherwise updates the existing one. Returns `(created, updated)`.
+    in the DB, otherwise updates the existing one. A new trade needs at least
+    `symbol` and `direction` to exist at all — a note missing either is
+    skipped rather than raising. Returns `(created, updated, skipped)`.
     """
-    created = updated = 0
+    created = updated = skipped = 0
     for path in sorted(Path(dir).glob("*.md")):
         data = parse(path.read_text())
         ref = data.get("id")
         if not ref:
+            skipped += 1
             continue
 
         trade = session.execute(
@@ -281,6 +316,9 @@ def import_dir(session: Session, dir: str | Path, account_id: int) -> tuple[int,
         ).scalar_one_or_none()
 
         if trade is None:
+            if not data.get("symbol") or not data.get("direction"):
+                skipped += 1
+                continue
             asset_class = _ASSET_CLASS_BY_MARKET.get(data.get("market"), AssetClass.CRYPTO)
             instrument = get_or_create_instrument(session, data["symbol"], asset_class)
             trade = Trade(
@@ -298,4 +336,4 @@ def import_dir(session: Session, dir: str | Path, account_id: int) -> tuple[int,
         _apply_parsed(trade, data)
 
     session.commit()
-    return created, updated
+    return created, updated, skipped

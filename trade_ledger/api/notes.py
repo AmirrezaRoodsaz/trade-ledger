@@ -30,6 +30,7 @@ class ImportIn(BaseModel):
 class ImportOut(BaseModel):
     created: int
     updated: int
+    skipped: int
 
 
 @router.post("/notes/export", response_model=ExportOut)
@@ -42,5 +43,5 @@ def export_notes(payload: ExportIn, session: Session = Depends(get_session)):
 @router.post("/notes/import", response_model=ImportOut)
 def import_notes(payload: ImportIn, session: Session = Depends(get_session)):
     get_account_or_404(session, payload.account_id)
-    created, updated = notes.import_dir(session, payload.dir, payload.account_id)
-    return ImportOut(created=created, updated=updated)
+    created, updated, skipped = notes.import_dir(session, payload.dir, payload.account_id)
+    return ImportOut(created=created, updated=updated, skipped=skipped)

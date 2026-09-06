@@ -93,8 +93,8 @@ def _cmd_import_notes(args: argparse.Namespace) -> int:
         if account is None:
             print(f"unknown account: {args.account}")
             return 1
-        created, updated = notes.import_dir(session, args.dir, account.id)
-    print(f"created {created}, updated {updated}")
+        created, updated, skipped = notes.import_dir(session, args.dir, account.id)
+    print(f"created {created}, updated {updated}, skipped {skipped}")
     return 0
 
 

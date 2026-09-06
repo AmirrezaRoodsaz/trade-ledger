@@ -9,11 +9,20 @@ def test_stub_subcommands_print_not_yet_implemented(capsys):
         assert "not yet implemented" in capsys.readouterr().out
 
 
-def test_import_reports_missing_importers_module(capsys):
-    # Task 2 (the importers package) is a parallel task not yet merged here.
-    rc = cli.main(["import", "--account", "acct", "--format", "generic", "file.csv"])
+def test_import_reports_unknown_format(capsys):
+    rc = cli.main(["import", "--account", "acct", "--format", "bogus", "file.csv"])
     assert rc == 1
-    assert "importers not available" in capsys.readouterr().out
+    assert "unknown import format" in capsys.readouterr().out
+
+
+def test_import_reports_unknown_account(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("DB_PATH", ":memory:")
+    csv_file = tmp_path / "file.csv"
+    csv_file.write_text("date,type,symbol,asset_class,quantity,price,currency,fee,fee_currency,"
+                         "amount_eur,external_id,note\n")
+    rc = cli.main(["import", "--account", "does-not-exist", "--format", "generic", str(csv_file)])
+    assert rc == 1
+    assert "unknown account: does-not-exist" in capsys.readouterr().out
 
 
 def test_prices_without_refresh_is_a_noop(capsys):

@@ -140,6 +140,28 @@ def test_export_all_writes_one_file_named_after_the_trade(
     assert files[0].read_text() == FIXTURE.read_text()
 
 
+def test_round_trip_quotes_yaml_special_characters(session, account_factory, instrument_factory):
+    """A colon in the venue name or a `#` in the playbook name would either
+    break YAML parsing or silently truncate the value if rendered raw — both
+    must come back out of `parse()` exactly as they went in.
+    """
+    account = account_factory(name="OKX: Paper", mode=Mode.PAPER)
+    instrument = instrument_factory(symbol="BTC", asset_class=AssetClass.CRYPTO)
+    playbook = Playbook(name="Breakout #1")
+    session.add(playbook)
+    session.flush()
+    version = PlaybookVersion(playbook_id=playbook.id, version=1, rules_md="breakout")
+    session.add(version)
+    session.flush()
+    trade = _closed_trade(session, account, instrument, playbook_version_id=version.id)
+
+    rendered = notes.render(trade, account, instrument)
+    parsed = notes.parse(rendered)
+
+    assert parsed["venue"] == "OKX: Paper"
+    assert parsed["strategy"] == "Breakout #1 v1"
+
+
 def test_export_all_filters_by_mode(tmp_path, session, account_factory, instrument_factory):
     paper = account_factory(name="Paper", mode=Mode.PAPER)
     live = account_factory(name="Live", mode="live")
@@ -150,6 +172,22 @@ def test_export_all_filters_by_mode(tmp_path, session, account_factory, instrume
     files = notes.export_all(session, tmp_path, mode="live")
 
     assert [f.name for f in files] == ["T-002 BTC long.md"]
+
+
+def test_export_all_sanitises_slashes_in_the_symbol(
+    tmp_path, session, account_factory, instrument_factory
+):
+    """`instrument.symbol` for an FX pair is `EUR/USD` — `/` in a filename
+    component is a path separator, not a character to write.
+    """
+    account = account_factory(name="Kraken", mode=Mode.PAPER)
+    instrument = instrument_factory(symbol="BTC/EUR", asset_class=AssetClass.CRYPTO)
+    _closed_trade(session, account, instrument, playbook_version_id=None)
+
+    files = notes.export_all(session, tmp_path)
+
+    assert [f.name for f in files] == ["T-001 BTC-EUR long.md"]
+    assert files[0].exists()
 
 
 def test_import_dir_updates_status_of_existing_trade(
@@ -164,9 +202,9 @@ def test_import_dir_updates_status_of_existing_trade(
     note = tmp_path / "T-001 BTC long.md"
     note.write_text(FIXTURE.read_text())  # the note (status: closed) is the source of truth
 
-    created, updated = notes.import_dir(session, tmp_path, account.id)
+    created, updated, skipped = notes.import_dir(session, tmp_path, account.id)
 
-    assert (created, updated) == (0, 1)
+    assert (created, updated, skipped) == (0, 1, 0)
     session.refresh(trade)
     assert trade.status == TradeStatus.CLOSED
     assert trade.adherence is True
@@ -180,9 +218,28 @@ def test_import_dir_creates_a_new_trade_for_an_unknown_ref(
     note = tmp_path / "T-999 BTC long.md"
     note.write_text(FIXTURE.read_text().replace("id: T-001", "id: T-999"))
 
-    created, updated = notes.import_dir(session, tmp_path, account.id)
+    created, updated, skipped = notes.import_dir(session, tmp_path, account.id)
 
-    assert (created, updated) == (1, 0)
+    assert (created, updated, skipped) == (1, 0, 0)
     trade = session.query(Trade).filter(Trade.external_ref == "T-999").one()
     assert trade.status == TradeStatus.CLOSED
     assert trade.account_id == account.id
+
+
+def test_import_dir_skips_a_new_trade_note_missing_symbol_or_direction(
+    tmp_path, session, account_factory
+):
+    account = account_factory(name="OKX Paper", mode=Mode.PAPER)
+    (tmp_path / "T-900 no-symbol.md").write_text(
+        FIXTURE.read_text().replace("id: T-001", "id: T-900").replace("symbol: BTC", "symbol: ")
+    )
+    (tmp_path / "T-901 no-direction.md").write_text(
+        FIXTURE.read_text()
+        .replace("id: T-001", "id: T-901")
+        .replace("direction: long", "direction: ")
+    )
+
+    created, updated, skipped = notes.import_dir(session, tmp_path, account.id)
+
+    assert (created, updated, skipped) == (0, 0, 2)
+    assert session.query(Trade).count() == 0
