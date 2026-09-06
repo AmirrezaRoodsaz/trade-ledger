@@ -250,7 +250,7 @@ def get_histogram(
     tag: str | None = None,
     date_from: UTCDatetime | None = None,
     date_to: UTCDatetime | None = None,
-    bin: Money = Decimal("0.5"),
+    bin_size: Money = Decimal("0.5"),
     session: Session = Depends(get_session),
 ):
     trades = _filtered_trades(
@@ -263,7 +263,7 @@ def get_histogram(
         date_from=date_from,
         date_to=date_to,
     )
-    return analytics.r_histogram(trades, bin)
+    return analytics.r_histogram(trades, bin_size)
 
 
 @router.get("/calendar", response_model=dict[str, CalendarEntry])

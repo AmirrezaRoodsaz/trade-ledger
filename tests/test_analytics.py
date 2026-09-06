@@ -110,6 +110,16 @@ def test_sqn_and_std_none_below_two_trades():
     assert stats.std_r is None
 
 
+def test_all_wins_gives_no_profit_factor_or_payoff():
+    """Both ratios divide by the loss side; with no losses there's nothing
+    to divide by, so both stay `None` rather than reporting a fake infinity.
+    """
+    stats = analytics.compute_stats([_trade("1", _ts(1)), _trade("2", _ts(2))])
+    assert stats.profit_factor is None
+    assert stats.payoff is None
+    assert stats.avg_loss_r == Decimal(0)
+
+
 def test_adherence_mistakes_mae_mfe_and_capture():
     trades = [
         _trade("2", _ts(1), adherence=True, mae_r="-0.5", mfe_r="3"),
@@ -133,6 +143,29 @@ def test_avg_hold_hours_win_and_loss():
     stats = analytics.compute_stats([win, loss])
     assert stats.avg_hold_hours_win == Decimal(24)
     assert stats.avg_hold_hours_loss == Decimal(12)
+
+
+def test_avg_hold_hours_has_no_float_noise():
+    """`timedelta.total_seconds()` returns a `float`; 45.123456 isn't exactly
+    representable in binary, so routing a hold time through it (via
+    `Decimal(delta.total_seconds())`) used to leak dozens of spurious digits
+    past the microsecond precision the input actually has. The integer-based
+    formula must not.
+    """
+    delta = timedelta(hours=1, minutes=23, seconds=45, microseconds=123456)
+    opened = _ts(1)
+    stats = analytics.compute_stats([_trade("1", opened + delta, opened_ts=opened)])
+
+    # Same integer arithmetic as the implementation, computed independently.
+    seconds = Decimal(delta.days) * 86400 + Decimal(delta.seconds) + Decimal(delta.microseconds) / 1_000_000
+    expected = seconds / 3600
+    assert stats.avg_hold_hours_win == expected
+
+    # The pre-division seconds value is where the old float bug would show:
+    # exactly 6 fractional digits here, not dozens of binary-noise digits.
+    fractional_digits = str(seconds).partition(".")[2]
+    assert seconds == Decimal("5025.123456")
+    assert len(fractional_digits) <= 6
 
 
 def test_breakdown_by_weekday_keys_are_english_abbreviations():

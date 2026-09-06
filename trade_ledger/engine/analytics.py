@@ -16,11 +16,24 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import ROUND_FLOOR, Decimal
 
 from ..enums import TradeStatus
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _exact_hours(delta: timedelta) -> Decimal:
+    """`timedelta` -> hours as an exact `Decimal`, built from its integer
+    `days`/`seconds`/`microseconds` fields. `timedelta.total_seconds()`
+    returns a `float` — routing a hold time through one would leak binary
+    floating-point noise into `avg_hold_hours_win/loss` and the hold buckets.
+    """
+    seconds = (
+        Decimal(delta.days) * 86400 + Decimal(delta.seconds) + Decimal(delta.microseconds) / 1_000_000
+    )
+    return seconds / 3600
 
 
 @dataclass
@@ -231,7 +244,7 @@ def _avg_hold_hours(trades: list, *, want_win: bool) -> Decimal | None:
             continue
         if not want_win and r >= 0:
             continue
-        hours.append(Decimal((t.closed_ts - t.opened_ts).total_seconds()) / Decimal(3600))
+        hours.append(_exact_hours(t.closed_ts - t.opened_ts))
     return _mean(hours) if hours else None
 
 
@@ -250,7 +263,7 @@ def _tags(trade) -> list[str]:
 def _hold_bucket(trade) -> str:
     if trade.opened_ts is None:
         return ">4w"
-    days = (trade.closed_ts - trade.opened_ts).total_seconds() / 86400
+    days = _exact_hours(trade.closed_ts - trade.opened_ts) / 24
     if days < 1:
         return "<1d"
     if days < 3:
@@ -315,19 +328,19 @@ def equity_curve(trades) -> list[dict]:
     return out
 
 
-def r_histogram(trades, bin: Decimal = Decimal("0.5")) -> list[dict]:
-    """Non-empty bins of width `bin`, sorted ascending. A trade's bin is the
-    half-open interval `[lo, lo + bin)` its R multiple falls into.
+def r_histogram(trades, bin_size: Decimal = Decimal("0.5")) -> list[dict]:
+    """Non-empty bins of width `bin_size`, sorted ascending. A trade's bin is
+    the half-open interval `[lo, lo + bin_size)` its R multiple falls into.
     """
     trades = closed(trades)
     counts: dict[Decimal, int] = {}
     for t in trades:
-        idx = (t.r_multiple / bin).to_integral_value(rounding=ROUND_FLOOR)
+        idx = (t.r_multiple / bin_size).to_integral_value(rounding=ROUND_FLOOR)
         counts[idx] = counts.get(idx, 0) + 1
     out = []
     for idx in sorted(counts):
-        lo = idx * bin
-        out.append({"lo": lo, "hi": lo + bin, "count": counts[idx]})
+        lo = idx * bin_size
+        out.append({"lo": lo, "hi": lo + bin_size, "count": counts[idx]})
     return out
 
 
