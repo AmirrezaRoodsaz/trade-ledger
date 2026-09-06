@@ -303,7 +303,7 @@ def test_summary_route_carries_the_disclaimer(client, session, okx, btc, tx_fact
     assert response.status_code == 200
     body = response.json()
     assert body["disclaimer"] == "Berechnung — mit Steuerberater prüfen"
-    assert body["form_status"] == "VZ 2025, geprüft 2026-09-06"
+    assert body["form_status"] == "Formstand: VZ 2025, geprüft 2026-09-06"
     assert body["p23"]["net"] == "1200"
     assert body["p23"]["exceeded"] is True
 
@@ -322,6 +322,18 @@ def test_mode_defaults_to_live(client, account_factory, btc, tx_factory):
 
     assert client.get("/api/tax/2025/summary").json()["p23"]["net"] == "0"
     assert client.get("/api/tax/2025/summary?mode=all").json()["p23"]["net"] == "1200"
+
+
+def test_explicit_account_id_is_still_intersected_with_mode(client, account_factory, btc, tx_factory):
+    """Naming a paper account under `mode=live` must not pull paper lots into
+    a tax figure — the same intersection the stats routes apply.
+    """
+    paper = account_factory(name="okx-paper2", kind=AccountKind.CRYPTO_SPOT, mode=Mode.PAPER)
+    tx_factory(paper, btc, TxType.BUY, ts(2025, 1, 10), quantity=D(1), amount_eur=D(10000))
+
+    params = {"account_id": paper.id}
+    assert client.get("/api/tax/2025/lots", params=params).json()["lots"] == []
+    assert client.get("/api/tax/2025/lots", params={**params, "mode": "paper"}).json()["lots"] != []
 
 
 def test_disposals_lots_and_export_routes(client, okx, btc, tx_factory):

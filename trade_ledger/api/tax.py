@@ -23,13 +23,14 @@ from ..enums import Mode, TaxRegime, TxType
 from ..models import Account, Instrument, Transaction
 from ..tax import anlage, exports
 from ..tax.regime import regime_for
-from ..tax.year_summary import YearSummary, accounts_in_mode, summarize
+from ..tax.year_summary import YearSummary, summarize
+from ._common import resolve_account_ids
 from .schemas import BaseModel, Money
 
 router = APIRouter(prefix="/tax")
 
 DISCLAIMER = "Berechnung — mit Steuerberater prüfen"
-FORM_STATUS = "VZ 2025, geprüft 2026-09-06"
+FORM_STATUS = "Formstand: VZ 2025, geprüft 2026-09-06"
 
 
 class TaxResponse(BaseModel):
@@ -177,9 +178,12 @@ class WarningsOut(TaxResponse):
     warnings: list[str]
 
 
-def _account_ids(session: Session, mode: str, account_id: list[int] | None) -> list[int] | None:
-    """Explicit account ids win; otherwise every account in `mode`."""
-    return account_id or accounts_in_mode(session, mode)
+def _account_ids(session: Session, mode: str, account_id: list[int] | None) -> list[int]:
+    """The same mode intersection every stats route uses: explicit ids are
+    still filtered by `mode`, so a paper account asked for under `mode=live`
+    contributes nothing rather than leaking paper trades into a tax figure.
+    """
+    return resolve_account_ids(session, account_id, mode)
 
 
 def _summary(session: Session, year: int, mode: str, account_id: list[int] | None) -> YearSummary:
@@ -198,9 +202,7 @@ def list_years(
     session: Session = Depends(get_session),
 ):
     stmt = select(func.substr(cast(Transaction.ts, String), 1, 4)).distinct()
-    ids = _account_ids(session, mode, account_id)
-    if ids is not None:
-        stmt = stmt.where(Transaction.account_id.in_(ids))
+    stmt = stmt.where(Transaction.account_id.in_(_account_ids(session, mode, account_id)))
     return YearsOut(years=sorted(int(row) for row in session.execute(stmt).scalars() if row))
 
 
@@ -353,13 +355,11 @@ def year_export(
     elif format == "lots":
         body = exports.lots_csv(summary.fifo)
     else:
-        ids = _account_ids(session, mode, account_id)
         stmt = select(Transaction).where(
             Transaction.ts >= datetime(year, 1, 1, tzinfo=UTC),
             Transaction.ts <= datetime(year, 12, 31, 23, 59, 59, tzinfo=UTC),
+            Transaction.account_id.in_(_account_ids(session, mode, account_id)),
         )
-        if ids is not None:
-            stmt = stmt.where(Transaction.account_id.in_(ids))
         transactions = list(session.execute(stmt.order_by(Transaction.ts)).scalars())
         instruments = list(session.execute(select(Instrument)).scalars())
         accounts = list(session.execute(select(Account)).scalars())
@@ -374,6 +374,6 @@ def year_export(
             # HTTP headers are latin-1 only, so the download carries an
             # ASCII transliteration of DISCLAIMER / FORM_STATUS.
             "X-Disclaimer": "Berechnung - mit Steuerberater pruefen",
-            "X-Form-Status": "VZ 2025, geprueft 2026-09-06",
+            "X-Form-Status": "Formstand: VZ 2025, geprueft 2026-09-06",
         },
     )
