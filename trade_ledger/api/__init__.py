@@ -1,8 +1,8 @@
 """Router auto-discovery.
 
 Every module in this package that defines a module-level `router: APIRouter`
-gets collected into `ROUTERS`. A later task adds a new `api/<name>.py` file
-with its own `router` and never has to touch this list.
+gets collected into `ROUTERS`. A new `api/<name>.py` file with its own
+`router` is picked up without touching any list.
 
 The `/api` prefix is applied once, here in `main.create_app()` — not on the
 individual routers — so router modules just declare plain paths

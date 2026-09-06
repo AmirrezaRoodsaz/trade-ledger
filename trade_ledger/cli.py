@@ -17,8 +17,8 @@ from . import db
 from .settings import get_settings
 
 # ponytail: instruments have no "last price fetched" bookkeeping yet, so a
-# manual refresh just re-pulls a rolling window. Narrow this once Task 5 (or
-# a later one) tracks a per-instrument high-water mark.
+# manual refresh just re-pulls a rolling window. Narrow this once instruments
+# carry a per-instrument high-water mark.
 _PRICE_REFRESH_LOOKBACK = timedelta(days=30)
 
 

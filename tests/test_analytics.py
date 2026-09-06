@@ -75,7 +75,7 @@ def test_stats_match_the_fixture():
 
     assert (stats.count, stats.wins, stats.losses, stats.flat) == (6, 3, 3, 0)
     assert stats.win_rate == Decimal("0.5")
-    # Mean R, matching the money side's `trade_stats.py` (`expectancy = total_r / n`).
+    # Expectancy is the mean R over closed trades: total_r / n.
     assert stats.expectancy_r == Decimal("2.5") / 6
     assert stats.total_r == Decimal("2.5")
     assert stats.total_eur == Decimal(125)

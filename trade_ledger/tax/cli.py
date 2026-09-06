@@ -1,8 +1,7 @@
-"""`trade-ledger tax-year <year>`.
+"""`trade-ledger tax-year <year>` — the terminal rendering of a `YearSummary`.
 
-The argparse skeleton in `trade_ledger/cli.py` belongs to another task and is
-not on this branch, so the command body lives here as `print_year(session,
-year)`; wiring it up is one `subparser` call.
+The body lives next to the tax engine rather than in `trade_ledger/cli.py` so
+that the CLI stays a thin argparse skeleton.
 """
 
 from __future__ import annotations

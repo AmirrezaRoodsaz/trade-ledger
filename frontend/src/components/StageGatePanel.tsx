@@ -19,8 +19,8 @@ function Badge({ passed }: { passed: boolean }) {
   );
 }
 
-/** The same four checks the money side's `trade_stats.py` applies before a
- * stage advances. `mode=all` has no gate — a mixed sample is not a stage.
+/** The four checks that must pass before a stage advances. `mode=all` has no
+ * gate — a mixed sample is not a stage.
  */
 export function StageGatePanel({ gate }: { gate: StageGate | null }) {
   if (gate === null) {

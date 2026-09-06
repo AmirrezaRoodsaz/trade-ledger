@@ -369,7 +369,7 @@ _NEXT = {
 
 
 def stage_gate(trades, mode: str, capital: Decimal) -> dict:
-    """Same checks as the money side's `trade_stats.py`: minimum closed
+    """The four checks that decide whether a stage may be left: minimum closed
     trades (30 paper / 50 live), positive expectancy, adherence >= 90 %, and
     max drawdown (EUR) within 20 % of `capital`.
     """

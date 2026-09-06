@@ -1,9 +1,8 @@
 """Obsidian note export/import for `Trade` rows.
 
-Mirrors the sister vault's `_Trade Template.md` frontmatter exactly — same
-keys, same order — so its `trade_stats.py` script can read a note this
-module writes without any changes on that side. `render()` is hand-built
-string formatting rather than `yaml.dump`: the template leaves empty
+Writes one Markdown note per trade with a fixed frontmatter key order, so an
+external script reading the vault sees the same shape every time. `render()`
+is hand-built string formatting rather than `yaml.dump`: the template leaves empty
 scalars blank (`opened: `), which no YAML dumper produces by default.
 `parse()` reads the frontmatter back with `yaml.safe_load` (blank/quoted
 values are valid YAML either way) plus a couple of regexes for the two body

@@ -8,7 +8,7 @@ OKX exports vary in the wild; two header sets are accepted:
 
 `Instrument`/`instId` (e.g. `BTC-EUR`) splits into symbol/quote. A non-EUR
 quote means the EUR value can't be read off the row: `amount_eur` stays 0
-and `fx_source="pending"` for Task 5 to fill in.
+and `fx_source="pending"` for the price service to fill in.
 """
 
 from __future__ import annotations
