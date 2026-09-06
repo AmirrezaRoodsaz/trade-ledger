@@ -129,8 +129,13 @@ BUY or SELL.
 **Prices** are fetched daily and cached: Bitstamp for crypto (already EUR),
 Stooq for equities and funds (native quote currency), ECB for FX. A transaction
 whose EUR value could not be determined at import time is stored with
-`fx_source="pending"`; `prices/service.py` fills it in on the next refresh. Tax
-and portfolio code both warn rather than silently treating a pending amount as
+`fx_source="pending"`. `prices/service.fill_pending_eur` resolves those — a
+priced row via its currency's ECB rate (`fx_source="ecb"`), an in-kind row
+(staking reward, airdrop, crypto-to-crypto swap) off the instrument's own
+cached close (`fx_source="close"`) — and runs at the end of every sync, every
+`/api/imports/commit` and every `/api/prices/refresh`, each of which reports a
+`filled_pending` count. Rows that still cannot be valued stay pending; tax and
+portfolio code both warn rather than silently treating a pending amount as
 zero.
 
 ## Journal
@@ -256,7 +261,8 @@ through that map. `tax/exports.py` writes the ledger's own disposal and lot
 CSVs plus Blockpit and CoinTracking import templates.
 
 Every tax response carries `disclaimer` ("Berechnung — mit Steuerberater
-prüfen") and `form_status` ("VZ 2025, geprüft 2026-09-06"), including as
+prüfen") and `form_status` ("Formstand: VZ 2025, geprüft 2026-09-06"),
+including as
 headers on the CSV downloads. See `docs/tax-notes.md` for the underlying facts.
 
 ## Frontend

@@ -180,7 +180,7 @@ Working and tested end to end, with these known edges:
 ## Development
 
 ```bash
-uv run pytest -q          # 289 backend tests
+uv run pytest -q          # 299 backend tests
 uv run ruff check .
 cd frontend && npm run check && npm run build
 pre-commit install        # ruff + gitleaks on every commit

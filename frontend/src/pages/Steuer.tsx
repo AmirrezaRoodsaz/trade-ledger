@@ -194,11 +194,17 @@ export function Steuer() {
             </div>
           </Card>
 
-          <div className="mb-4 mt-4 flex flex-wrap gap-1 border-b border-line">
+          <div
+            role="tablist"
+            aria-label="Steuer-Ansichten"
+            className="mb-4 mt-4 flex flex-wrap gap-1 border-b border-line"
+          >
             {TABS.map((entry) => (
               <button
                 key={entry.key}
                 type="button"
+                role="tab"
+                aria-selected={tab === entry.key}
                 className={`rounded-t border-b-2 px-3 py-1 ${
                   tab === entry.key
                     ? "border-accent text-ink"
