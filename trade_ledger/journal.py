@@ -69,15 +69,25 @@ def next_ref(session: Session) -> str:
     return f"T-{highest + 1:03d}"
 
 
-def plan_trade(session: Session, data: Mapping[str, Any]) -> Trade:
-    """Create a `planned` trade. Requires entry, stop, risk and a pre-trade
-    note — a plan you cannot grade later is not a plan.
+def require_plan_fields(values: Mapping[str, Any] | Trade) -> None:
+    """Entry, stop, risk and a pre-trade note, with a stop that is not the
+    entry — a plan you cannot grade later is not a plan.
+
+    Checked when the trade is planned *and* again when it is opened: an edit
+    in between can strip a field, and a trade must never reach `open`
+    without the numbers its R is measured against.
     """
-    missing = [f for f in _REQUIRED_TO_PLAN if data.get(f) in (None, "")]
+    get = values.get if isinstance(values, Mapping) else lambda field: getattr(values, field)
+    missing = [f for f in _REQUIRED_TO_PLAN if get(f) in (None, "")]
     if missing:
         raise ValueError(f"missing required field(s): {', '.join(missing)}")
-    if data["planned_stop"] == data["planned_entry"]:
+    if get("planned_stop") == get("planned_entry"):
         raise ValueError("planned_stop must differ from planned_entry")
+
+
+def plan_trade(session: Session, data: Mapping[str, Any]) -> Trade:
+    """Create a `planned` trade."""
+    require_plan_fields(data)
 
     values = {k: v for k, v in data.items() if k in _TRADE_FIELDS and v is not None}
     for field in _JSON_FIELDS:
@@ -100,6 +110,7 @@ def open_trade(
 ) -> Trade:
     """Link the entry fills and move `planned` -> `open`."""
     _require(trade, TradeStatus.PLANNED, "open")
+    require_plan_fields(trade)
     fills = _link_fills(session, trade, entry_type(trade), fill_ids, manual)
     trade.status = TradeStatus.OPEN
     trade.opened_ts = min(f.ts for f in fills)

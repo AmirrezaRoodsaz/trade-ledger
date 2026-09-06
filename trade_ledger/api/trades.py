@@ -5,12 +5,11 @@ import json
 import re
 from datetime import UTC, datetime
 from decimal import Decimal
-from email import policy
-from email.parser import BytesParser
 from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import Field, field_validator
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
@@ -30,7 +29,7 @@ from ..journal import (
 from ..models import Account, Instrument, PlaybookVersion, Trade
 from ..settings import get_settings
 from ._common import get_account_or_404
-from .schemas import BaseModel, Money, Page
+from .schemas import BaseModel, Money, Page, UTCDatetime
 from .transactions import TransactionOut
 
 router = APIRouter()
@@ -93,7 +92,7 @@ class TradeOut(BaseModel):
 
 
 class ManualFillIn(BaseModel):
-    ts: datetime
+    ts: UTCDatetime
     quantity: Money
     price: Money
     fee_eur: Money = Decimal(0)
@@ -161,8 +160,8 @@ def list_trades(
     playbook_id: int | None = None,
     instrument_id: int | None = None,
     tag: str | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_from: UTCDatetime | None = None,
+    date_to: UTCDatetime | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
@@ -240,6 +239,10 @@ def get_trade(trade_id: int, session: Session = Depends(get_session)):
 @router.put("/trades/{trade_id}", response_model=TradeOut)
 def update_trade(trade_id: int, payload: TradeIn, session: Session = Depends(get_session)):
     trade = _get_trade_or_404(session, trade_id)
+    if trade.status != TradeStatus.PLANNED:
+        # Account, instrument and direction decide what the linked fills mean;
+        # once a trade is open they are history. Grading goes through /review.
+        raise HTTPException(status_code=409, detail="only planned trades can be edited")
     get_account_or_404(session, payload.account_id)
     if session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
@@ -297,26 +300,6 @@ def get_suggest_fills(trade_id: int, session: Session = Depends(get_session)):
     return suggest_fills(session, trade)
 
 
-def _parse_multipart(body: bytes, content_type: str) -> list[tuple[str, bytes]]:
-    """`(filename, bytes)` per uploaded part.
-
-    ponytail: the stdlib email parser instead of pulling in python-multipart
-    for one upload endpoint — form-data is MIME. Swap in FastAPI's
-    `UploadFile` if uploads ever grow beyond a handful of screenshots
-    (this reads the whole request into memory).
-    """
-    if not content_type.startswith("multipart/form-data"):
-        raise HTTPException(status_code=422, detail="expected multipart/form-data")
-    message = BytesParser(policy=policy.default).parsebytes(
-        b"Content-Type: " + content_type.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
-    )
-    return [
-        (part.get_filename(), part.get_payload(decode=True))
-        for part in message.iter_parts()
-        if part.get_filename()
-    ]
-
-
 def _stored_name(filename: str) -> str:
     """Collision-free, traversal-free file name with an allowed suffix."""
     name = Path(filename).name
@@ -329,20 +312,18 @@ def _stored_name(filename: str) -> str:
 
 @router.post("/trades/{trade_id}/screenshots", response_model=TradeOut)
 async def upload_screenshots(
-    trade_id: int, request: Request, session: Session = Depends(get_session)
+    trade_id: int,
+    files: Annotated[list[UploadFile], File()],
+    session: Session = Depends(get_session),
 ):
     trade = _get_trade_or_404(session, trade_id)
-    uploads = _parse_multipart(await request.body(), request.headers.get("content-type", ""))
-    if not uploads:
-        raise HTTPException(status_code=422, detail="no file part in the request")
-
     data_dir = Path(get_settings().DATA_DIR)
     stored = json.loads(trade.screenshots)
-    for filename, content in uploads:
-        relative = Path("screenshots") / str(trade_id) / _stored_name(filename)
+    for upload in files:
+        relative = Path("screenshots") / str(trade_id) / _stored_name(upload.filename or "")
         target = data_dir / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        target.write_bytes(await upload.read())
         stored.append(relative.as_posix())
 
     trade.screenshots = json.dumps(stored)

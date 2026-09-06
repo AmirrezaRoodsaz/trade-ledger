@@ -142,6 +142,14 @@ def test_status_guards(session, account_factory, instrument_factory):
     assert trade.mistake == "early_exit"
 
 
+def test_open_rechecks_the_planned_fields(session, account_factory, instrument_factory):
+    trade = _plan(session, account_factory(), instrument_factory())
+    trade.risk_eur = None  # an edit between plan and open
+    with pytest.raises(ValueError, match="risk_eur"):
+        open_trade(session, trade, manual=_fill())
+    assert trade.status == TradeStatus.PLANNED
+
+
 def test_open_requires_a_fill(session, account_factory, instrument_factory):
     trade = _plan(session, account_factory(), instrument_factory())
     with pytest.raises(ValueError, match="at least one fill"):

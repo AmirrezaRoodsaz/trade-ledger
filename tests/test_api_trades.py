@@ -91,6 +91,65 @@ def test_update_trade_keeps_the_journal_id(client, account_factory, instrument_f
     assert same_stop.status_code == 422
 
 
+def test_open_needs_the_planned_fields_even_after_an_edit(
+    client, account_factory, instrument_factory
+):
+    """A PUT may strip risk_eur; opening such a trade must still be refused."""
+    account, instrument = account_factory(), instrument_factory()
+    trade = _plan(client, account, instrument).json()
+    stripped = client.put(
+        f"/api/trades/{trade['id']}",
+        json={
+            "account_id": account.id,
+            "instrument_id": instrument.id,
+            "direction": "long",
+            "planned_entry": "100",
+            "planned_stop": "95",
+            "note_pre": "still a plan, but no risk",
+        },
+    )
+    assert stripped.status_code == 200, stripped.text
+    assert stripped.json()["risk_eur"] is None
+
+    resp = client.post(f"/api/trades/{trade['id']}/open", json=_manual("2026-03-02T10:00:00+00:00"))
+    assert resp.status_code == 422, resp.text
+    assert "risk_eur" in resp.json()["detail"]
+    assert client.get(f"/api/trades/{trade['id']}").json()["status"] == "planned"
+
+
+def test_edit_of_a_non_planned_trade_is_409(client, account_factory, instrument_factory):
+    account, instrument = account_factory(), instrument_factory()
+    trade = _plan(client, account, instrument).json()
+    client.post(f"/api/trades/{trade['id']}/open", json=_manual("2026-03-02T10:00:00+00:00"))
+    resp = client.put(
+        f"/api/trades/{trade['id']}",
+        json={
+            "account_id": account.id,
+            "instrument_id": instrument.id,
+            "direction": "short",
+            "planned_entry": "100",
+            "planned_stop": "95",
+            "risk_eur": "50",
+            "note_pre": "rewriting history",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert client.get(f"/api/trades/{trade['id']}").json()["direction"] == "long"
+
+
+def test_naive_datetimes_are_read_as_utc(client, account_factory, instrument_factory):
+    trade = _plan(client, account_factory(), instrument_factory()).json()
+    opened = client.post(f"/api/trades/{trade['id']}/open", json=_manual("2026-03-02T10:00:00"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["opened_ts"] == "2026-03-02T10:00:00Z"
+
+    listed = client.get(
+        "/api/trades", params={"date_from": "2026-03-01T00:00:00", "date_to": "2026-03-03T00:00:00"}
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == 1
+
+
 def test_open_an_open_trade_is_409(client, account_factory, instrument_factory):
     trade = _plan(client, account_factory(), instrument_factory()).json()
     client.post(f"/api/trades/{trade['id']}/open", json=_manual("2026-03-02T10:00:00+00:00"))
@@ -175,7 +234,7 @@ def test_screenshot_upload(client, account_factory, instrument_factory, tmp_path
 
     resp = client.post(
         f"/api/trades/{trade['id']}/screenshots",
-        files={"file": ("entry chart.png", PNG_BYTES, "image/png")},
+        files={"files": ("entry chart.png", PNG_BYTES, "image/png")},
     )
     assert resp.status_code == 200, resp.text
     stored = resp.json()["screenshots"]
@@ -186,7 +245,7 @@ def test_screenshot_upload(client, account_factory, instrument_factory, tmp_path
 
     bad = client.post(
         f"/api/trades/{trade['id']}/screenshots",
-        files={"file": ("notes.pdf", b"%PDF", "application/pdf")},
+        files={"files": ("notes.pdf", b"%PDF", "application/pdf")},
     )
     assert bad.status_code == 422
 
