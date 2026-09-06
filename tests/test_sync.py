@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select
 
 from trade_ledger.adapters import base as adapters_base
+from trade_ledger.adapters.ccxt_adapter import CcxtAdapter
 from trade_ledger.enums import TxSource, TxType, Venue
 from trade_ledger.ledger import TxDraft
 from trade_ledger.models import Transaction
@@ -82,6 +83,54 @@ def test_sync_account_ok_run_then_second_sync_skips_duplicates(
     assert tx_count == 1
 
 
+class _FakeCcxtExchange:
+    """Minimal duck-typed ccxt exchange: one page of withdrawals, nothing else."""
+
+    def __init__(self, withdrawals: list[dict]):
+        self._withdrawals = withdrawals
+        self._served = False
+
+    def fetch_my_trades(self, since=None, limit=None):
+        return []
+
+    def fetch_deposits(self, since=None, limit=None):
+        return []
+
+    def fetch_withdrawals(self, since=None, limit=None):
+        if self._served:
+            return []
+        self._served = True
+        return self._withdrawals
+
+    def fetch_ledger(self, since=None, limit=None):
+        return []
+
+    def fetch_balance(self):
+        return {"total": {}}
+
+
+def test_sync_account_ccxt_pending_item_warns_but_stays_ok(session, account_factory, monkeypatch):
+    """A pending withdrawal (timestamp=None) must not fail the whole sync run
+    — it's dropped with a warning, everything else still gets upserted."""
+    fake = _FakeCcxtExchange(
+        [
+            {"id": "w-pending", "timestamp": None, "currency": "BTC", "amount": 1},
+            {"id": "w1", "timestamp": 1_700_000_000_000, "currency": "BTC", "amount": 1},
+        ]
+    )
+    adapter = CcxtAdapter("okx", "key", "secret", "pass", exchange=fake)
+    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
+    monkeypatch.setattr(adapters_base, "build_adapter", lambda acct, settings: adapter)
+
+    run = adapters_base.sync_account(session, account, Settings())
+
+    assert run.status == "ok"
+    assert run.added == 1
+    assert "withdrawal w-pending skipped: no timestamp (pending?)" in run.error
+    tx_count = session.execute(select(func.count()).select_from(Transaction)).scalar()
+    assert tx_count == 1
+
+
 def test_sync_account_adapter_error_rolls_back_and_records_message(
     session, account_factory, monkeypatch
 ):
@@ -91,9 +140,7 @@ def test_sync_account_adapter_error_rolls_back_and_records_message(
         def fetch_transactions(self, since):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        adapters_base, "build_adapter", lambda acct, settings: _FailingAdapter([])
-    )
+    monkeypatch.setattr(adapters_base, "build_adapter", lambda acct, settings: _FailingAdapter([]))
 
     run = adapters_base.sync_account(session, account, Settings())
 
@@ -133,34 +180,36 @@ def test_sync_endpoint_creates_and_lists_sync_runs(client, monkeypatch):
 
 
 def test_build_adapter_unsupported_venue_raises_not_implemented(account_factory):
-    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
-    with pytest.raises(NotImplementedError, match="okx"):
+    # OKX/Kraken are wired up as of the ccxt adapter — Binance stays
+    # unimplemented, so it's the stand-in for "unsupported venue" here.
+    account = account_factory(venue=Venue.BINANCE, credential_env_prefix="BINANCE_TEST")
+    with pytest.raises(NotImplementedError, match="binance"):
         adapters_base.build_adapter(account, Settings())
 
 
 def test_sync_account_unsupported_venue_finishes_as_error_not_stuck_running(
     session, account_factory
 ):
-    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
+    account = account_factory(venue=Venue.BINANCE, credential_env_prefix="BINANCE_TEST")
 
     run = adapters_base.sync_account(session, account, Settings())
 
     assert run.status == "error"
-    assert run.error == "adapter for okx not available"
+    assert run.error == "adapter for binance not available"
     assert run.finished is not None
     tx_count = session.execute(select(func.count()).select_from(Transaction)).scalar()
     assert tx_count == 0
 
 
-def test_sync_endpoint_okx_account_returns_error_run_not_500(client):
+def test_sync_endpoint_binance_account_returns_error_run_not_500(client):
     resp = client.post(
         "/api/accounts",
         json={
-            "venue": "okx",
-            "name": "okx-main",
+            "venue": "binance",
+            "name": "binance-main",
             "kind": "crypto_spot",
             "mode": "live",
-            "credential_env_prefix": "OKX_TEST",
+            "credential_env_prefix": "BINANCE_TEST",
         },
     )
     account = resp.json()
@@ -170,4 +219,4 @@ def test_sync_endpoint_okx_account_returns_error_run_not_500(client):
     assert sync_resp.status_code == 200, sync_resp.text
     body = sync_resp.json()
     assert body["status"] == "error"
-    assert body["error"] == "adapter for okx not available"
+    assert body["error"] == "adapter for binance not available"

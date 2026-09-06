@@ -1,6 +1,6 @@
 """Adapter protocol, credential lookup, and per-venue dispatch shared by
-every read-only venue integration. Trading 212 is wired up now; OKX/Kraken
-land in a later task's `ccxt_adapter.py`.
+every read-only venue integration: Trading 212 (`trading212.py`) and
+OKX/Kraken via `ccxt` (`ccxt_adapter.py`).
 """
 
 from __future__ import annotations
@@ -24,19 +24,30 @@ class MissingCredentialsError(Exception):
 
 
 class Adapter(Protocol):
+    warnings: list[str]
+
     def fetch_transactions(self, since: datetime | None) -> list[TxDraft]: ...
     def fetch_balances(self) -> dict[str, Decimal]: ...
 
 
 def credentials(prefix: str) -> dict[str, str]:
-    """Read `{prefix}_API_KEY`/`{prefix}_API_SECRET`: `os.environ` first,
-    falling back to `.env` (parsed the same way `settings.env_status()`
-    does). Never logs or returns anything beyond these two keys — a missing
-    key is simply absent from the result, never an empty string.
+    """Read `{prefix}_API_KEY`/`{prefix}_API_SECRET`/`{prefix}_API_PASSPHRASE`:
+    `os.environ` first, falling back to `.env` (parsed the same way
+    `settings.env_status()` does). Never logs or returns anything beyond
+    these keys — a missing key is simply absent from the result, never an
+    empty string.
+
+    Passphrase is only ever required by OKX (`build_adapter`'s OKX branch is
+    the only reader of `f"{prefix}_API_PASSPHRASE"`). It's still looked up
+    here unconditionally rather than gated on venue — one shared read is
+    simpler than plumbing venue into this helper, and every other venue's
+    `build_adapter` branch just never reads the key back out of the dict it
+    gets, so an unused `_API_PASSPHRASE` env var for e.g. a Trading 212 or
+    Kraken account is harmless.
     """
     from_file = env_values()
     result: dict[str, str] = {}
-    for suffix in ("API_KEY", "API_SECRET"):
+    for suffix in ("API_KEY", "API_SECRET", "API_PASSPHRASE"):
         key = f"{prefix}_{suffix}"
         value = os.environ.get(key) or from_file.get(key)
         if value:
@@ -45,8 +56,8 @@ def credentials(prefix: str) -> dict[str, str]:
 
 
 def build_adapter(account: Account, settings: Settings) -> Adapter:
-    """Dispatch on `account.venue`. Only Trading 212 exists so far; every
-    other venue raises until a later task adds it.
+    """Dispatch on `account.venue`. Trading 212, OKX, and Kraken are wired
+    up; every other venue raises until a later task adds it.
     """
     if account.venue == Venue.TRADING212:
         from .trading212 import Trading212Adapter
@@ -60,6 +71,29 @@ def build_adapter(account: Account, settings: Settings) -> Adapter:
         # ponytail: our own `mode` (live/paper/demo) decides which T212 API
         # environment to call — only a `live` account talks to real money.
         return Trading212Adapter(api_key, api_secret, demo=account.mode != Mode.LIVE)
+
+    if account.venue in (Venue.OKX, Venue.KRAKEN):
+        from .ccxt_adapter import CcxtAdapter
+
+        prefix = account.credential_env_prefix
+        creds = credentials(prefix) if prefix else {}
+        api_key = creds.get(f"{prefix}_API_KEY")
+        api_secret = creds.get(f"{prefix}_API_SECRET")
+        if not api_key or not api_secret:
+            raise MissingCredentialsError("missing credentials")
+
+        if account.venue == Venue.OKX:
+            passphrase = creds.get(f"{prefix}_API_PASSPHRASE")
+            if not passphrase:
+                raise MissingCredentialsError("missing credentials")
+            return CcxtAdapter(
+                "okx", api_key, api_secret, passphrase, demo=account.mode == Mode.DEMO
+            )
+
+        # Kraken has no sandbox/demo mode — always live, regardless of our
+        # own `mode` field (a paper/demo Kraken account just means "don't
+        # trade on it", not "hit a sandbox API that doesn't exist").
+        return CcxtAdapter("kraken", api_key, api_secret)
 
     raise NotImplementedError(f"adapter for {account.venue} not available")
 
@@ -110,6 +144,9 @@ def sync_account(session: Session, account: Account, settings: Settings) -> Sync
     run.status = "ok"
     run.added = added
     run.skipped = skipped
+    warnings = getattr(adapter, "warnings", [])
+    if warnings:
+        run.error = "; ".join(warnings)
     run.finished = datetime.now(UTC)
     session.commit()
     return run
