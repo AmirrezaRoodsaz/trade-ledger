@@ -26,8 +26,8 @@ export function StageGatePanel({ gate }: { gate: StageGate | null }) {
   if (gate === null) {
     return (
       <EmptyState>
-        The stage gate needs a single mode. Pick <b>paper</b> or <b>live</b> in the filter bar —
-        a mixed sample cannot decide whether a stage is passed.
+        The stage gate is defined for <b>paper</b> and <b>live</b> only. Pick one of those in the
+        filter bar — a demo or mixed sample cannot decide whether a stage is passed.
       </EmptyState>
     );
   }

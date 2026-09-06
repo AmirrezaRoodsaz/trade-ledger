@@ -109,7 +109,7 @@ export function Portfolio() {
   );
 
   // Crypto § 23 clock, joined into the holdings table by instrument symbol.
-  const lots = useApi(() => fetchTaxLots(year, mode), [year, mode]);
+  const lots = useApi(() => fetchTaxLots(filters, year), [key, year]);
   const taxFree = daysToTaxFree(lots.data?.lots ?? [], today);
 
   const value = useApi(() => fetchValueSeries(filters, from, to), [key, from, to]);
@@ -308,7 +308,7 @@ export function Portfolio() {
           </Panel>
         </Card>
 
-        <Card title={`Fees ${year}`}>
+        <Card title={`Fees ${year} — per account`}>
           <Panel state={fees}>
             {(data) => (
               <>

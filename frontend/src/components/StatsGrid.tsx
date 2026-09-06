@@ -1,5 +1,5 @@
 import type { Stats } from "../api/types";
-import { eur, num, pct, r, signClass } from "../fmt";
+import { DASH, eur, num, pct, r, signClass } from "../fmt";
 
 type Format = "count" | "r" | "eur" | "pct" | "ratio" | "hours";
 
@@ -152,7 +152,7 @@ function render(value: Stats[keyof Stats], format: Format): string {
     case "pct":
       return pct(scalar);
     case "hours":
-      return scalar === null ? "—" : `${num(scalar, 1)} h`;
+      return scalar === null ? DASH : `${num(scalar, 1)} h`;
     default:
       return num(scalar, 2);
   }

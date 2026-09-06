@@ -98,8 +98,8 @@ export const fetchFees = (filters: PortfolioFilters, year: number) =>
 export const fetchReturns = (filters: PortfolioFilters, from: string, to: string) =>
   get<Returns>(`/portfolio/returns${portfolioQuery(filters, { from, to })}`);
 
-export const fetchTaxLots = (year: number, mode: ModeFilter) =>
-  get<TaxLots>(`/tax/${year}/lots?mode=${mode}`);
+export const fetchTaxLots = (filters: PortfolioFilters, year: number) =>
+  get<TaxLots>(`/tax/${year}/lots${portfolioQuery(filters)}`);
 
 export const refreshPrices = (start: string, end: string) =>
   post<RefreshResult>("/prices/refresh", { start, end });

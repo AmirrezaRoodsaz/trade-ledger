@@ -150,11 +150,10 @@ export function Analytics() {
   const equity = useApi(() => fetchEquity(filters), [key]);
   const histogram = useApi(() => fetchHistogram(filters, binSize), [key, binSize]);
   const breakdown = useApi(() => fetchBreakdown(filters, by), [key, by]);
-  // The stage gate refuses `mode=all`; don't ask, explain instead.
-  const gate = useApi(
-    () => (filters.mode === "all" ? Promise.resolve(null) : fetchStageGate(filters)),
-    [key],
-  );
+  // The gate is defined for paper and live only — the backend 422s on
+  // anything else, so don't ask, explain instead.
+  const hasGate = filters.mode === "paper" || filters.mode === "live";
+  const gate = useApi(() => (hasGate ? fetchStageGate(filters) : Promise.resolve(null)), [key]);
 
   return (
     <>
@@ -185,10 +184,10 @@ export function Analytics() {
         </Card>
 
         <Card title="Stage gate">
-          {filters.mode === "all" ? (
-            <StageGatePanel gate={null} />
-          ) : (
+          {hasGate ? (
             <Panel state={gate}>{(data) => <StageGatePanel gate={data} />}</Panel>
+          ) : (
+            <StageGatePanel gate={null} />
           )}
         </Card>
       </div>
