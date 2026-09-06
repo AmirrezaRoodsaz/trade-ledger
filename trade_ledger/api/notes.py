@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from .. import notes
 from ..db import get_session
-from ..settings import get_settings
 from ._common import get_account_or_404
 from .schemas import BaseModel
 
@@ -35,7 +34,7 @@ class ImportOut(BaseModel):
 
 @router.post("/notes/export", response_model=ExportOut)
 def export_notes(payload: ExportIn, session: Session = Depends(get_session)):
-    out_dir = payload.dir or get_settings().NOTES_OUT_DIR
+    out_dir = payload.dir or notes.default_out_dir(session)
     files = notes.export_all(session, out_dir)
     return ExportOut(files=len(files))
 

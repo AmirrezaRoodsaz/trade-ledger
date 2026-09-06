@@ -97,10 +97,9 @@ def _cmd_import(args: argparse.Namespace) -> int:
 def _cmd_export_notes(args: argparse.Namespace) -> int:
     from . import notes
 
-    settings = get_settings()
-    db.init_db(settings.DB_PATH)
-    out_dir = args.dir or settings.NOTES_OUT_DIR
+    db.init_db(get_settings().DB_PATH)
     with db.SessionLocal() as session:
+        out_dir = args.dir or notes.default_out_dir(session)
         files = notes.export_all(session, out_dir)
     print(f"exported {len(files)} note(s) to {out_dir}")
     return 0

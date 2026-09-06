@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session, object_session
 
 from .enums import AssetClass, Mode, TradeStatus
 from .ledger import get_or_create_instrument
-from .models import Account, Instrument, Playbook, PlaybookVersion, Trade
+from .models import Account, Instrument, Playbook, PlaybookVersion, Setting, Trade
+from .settings import get_settings
 
 FRONTMATTER_KEYS = (
     "trade",
@@ -196,6 +197,18 @@ def render(trade: Trade, account: Account, instrument: Instrument) -> str:
         did_i_follow,
     ]
     return "\n".join(lines) + "\n"
+
+
+def default_out_dir(session: Session) -> str:
+    """Where notes go when the caller names no directory: the `notes_out_dir`
+    Setting if one is stored, else `NOTES_OUT_DIR` from the environment.
+    The API and the CLI share this so a directory set in the UI is not
+    silently ignored by `export-notes`.
+    """
+    stored = session.get(Setting, "notes_out_dir")
+    if stored is not None and stored.value.strip():
+        return stored.value.strip()
+    return get_settings().NOTES_OUT_DIR
 
 
 def export_all(session: Session, out_dir: str | Path, mode: str | None = None) -> list[Path]:

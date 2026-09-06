@@ -243,3 +243,17 @@ def test_import_dir_skips_a_new_trade_note_missing_symbol_or_direction(
 
     assert (created, updated, skipped) == (0, 0, 2)
     assert session.query(Trade).count() == 0
+
+
+def test_default_out_dir_prefers_the_stored_setting_over_the_env(session, monkeypatch):
+    """The `notes_out_dir` setting is editable in the UI; before this it was
+    write-only and both the API and the CLI silently used the env default.
+    """
+    from trade_ledger.models import Setting
+
+    monkeypatch.setenv("NOTES_OUT_DIR", "/from/env")
+    assert notes.default_out_dir(session) == "/from/env"
+
+    session.add(Setting(key="notes_out_dir", value=" /from/settings "))
+    session.commit()
+    assert notes.default_out_dir(session) == "/from/settings"
