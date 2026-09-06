@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* One palette, defined once. Light is the base; dark only redefines tokens. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --surface-2: #f0efec;
+  --border: #e2e1dc;
+  --text: #1a1a18;
+  --muted: #6f6f68;
+  --accent: #2b5fd9;
+  --pos: #0f7b4f;
+  --neg: #c0362c;
+  --live: #a9761a;
+  --paper: #2b5fd9;
+  --demo: #7b7b74;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101011;
+    --surface: #17181a;
+    --surface-2: #1d1e21;
+    --border: #2a2b2f;
+    --text: #e7e7e3;
+    --muted: #97978f;
+    --accent: #6f95ff;
+    --pos: #45bd88;
+    --neg: #ef7a6d;
+    --live: #d6a03c;
+    --paper: #6f95ff;
+    --demo: #8b8b84;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  /* Every number in this app lines up in its column. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded border border-line bg-surface px-2 py-1 text-ink outline-none focus:border-accent;
+  }
+  .btn {
+    @apply rounded border border-line bg-surface px-3 py-1 text-ink hover:bg-surface2 disabled:opacity-40;
+  }
+  .btn-accent {
+    @apply rounded border border-accent bg-accent px-3 py-1 text-white hover:opacity-90 disabled:opacity-40;
+  }
+  .label {
+    @apply block text-[11px] uppercase tracking-wide text-muted;
+  }
+}
