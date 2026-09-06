@@ -122,6 +122,37 @@ def test_get_or_create_instrument_matches_on_symbol_and_asset_class(session):
     assert first.id == again.id
 
 
+def test_get_or_create_instrument_sets_then_backfills_only_none_fields(session):
+    created = get_or_create_instrument(
+        session,
+        "AAPL_US_EQ",
+        AssetClass.STOCK,
+        isin="US0378331005",
+        name="Apple Inc",
+        price_symbol="aapl.us",
+    )
+    assert created.name == "Apple Inc"
+    assert created.price_symbol == "aapl.us"
+    assert created.price_source == "stooq"
+
+    # clear one field to prove backfill only touches fields still None
+    created.isin = None
+    session.flush()
+
+    again = get_or_create_instrument(
+        session,
+        "AAPL_US_EQ",
+        AssetClass.STOCK,
+        isin="US0378331005",
+        name="Something Else",
+        price_symbol="different.us",
+    )
+    assert again.id == created.id
+    assert again.isin == "US0378331005"  # backfilled — was None
+    assert again.name == "Apple Inc"  # not overwritten — already set
+    assert again.price_symbol == "aapl.us"  # not overwritten — already set
+
+
 def test_cash_balance_sums_deltas(session, account_factory):
     account = account_factory()
     drafts = [

@@ -36,7 +36,11 @@ https://helpcentre.trading212.com/hc/en-us/articles/14584770928157-Trading-212-A
   guessed at — ponytail: add a mapping if a real transfer shows up.
 - **Pagination** — `cursor` + `limit` (max 50) request params; the response
   carries `nextPagePath`, a ready-to-call relative path (not a bare cursor
-  value) — following it verbatim is the documented way to page.
+  value) — following it verbatim is the documented way to page. A
+  `_MAX_PAGES` cap guards against an API bug (or bad mock) turning that loop
+  infinite. The transactions endpoint accepts a `time` filter per some
+  sources, but it isn't in the verified OpenAPI bundle, so all three history
+  endpoints filter by `since` client-side instead, consistently.
 - **Rate limiting** — 429 with `x-ratelimit-reset` (Unix timestamp, seconds)
   is documented for every endpoint used here.
 """
@@ -45,7 +49,8 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal
 
 import httpx
@@ -64,6 +69,7 @@ _POSITIONS_PATH = "/api/v0/equity/positions"
 _INSTRUMENTS_PATH = "/api/v0/equity/metadata/instruments"
 
 _MAX_RETRIES = 3
+_MAX_PAGES = 500  # ponytail: a well-behaved API pages a handful of times; more is a bug, not more data
 
 _TX_TYPE_MAP: dict[str, TxType] = {
     "DEPOSIT": TxType.DEPOSIT,
@@ -109,11 +115,13 @@ class Trading212Adapter:
         api_secret: str,
         demo: bool = False,
         client: httpx.Client | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
         base_url = _DEMO_BASE if demo else _LIVE_BASE
         self._client = client or httpx.Client(
             base_url=base_url, auth=(api_key, api_secret), timeout=30
         )
+        self._sleep = sleep_fn
         self._instruments_cache: dict[str, dict] | None = None
 
     def close(self) -> None:
@@ -128,7 +136,7 @@ class Trading212Adapter:
                 break
             reset = response.headers.get("x-ratelimit-reset")
             sleep_for = max(0.0, float(reset) - time.time()) if reset else 1.0
-            time.sleep(sleep_for)
+            self._sleep(sleep_for)
             response = self._client.get(path, params=params)
         response.raise_for_status()
         return response.json()
@@ -137,12 +145,14 @@ class Trading212Adapter:
         items: list[dict] = []
         next_path: str | None = path
         next_params: dict | None = params
-        while next_path:
+        for _ in range(_MAX_PAGES):
+            if not next_path:
+                return items
             payload = self._get(next_path, next_params)
             items.extend(payload.get("items", []))
             next_path = payload.get("nextPagePath") or None
             next_params = None  # nextPagePath already carries cursor/limit
-        return items
+        raise RuntimeError(f"pagination exceeded {_MAX_PAGES} pages for {path}")
 
     def _instruments(self) -> dict[str, dict]:
         if self._instruments_cache is None:
@@ -220,6 +230,8 @@ class Trading212Adapter:
                     instrument_symbol=ticker or None,
                     asset_class=self._asset_class(ticker),
                     isin=instrument.get("isin"),
+                    instrument_name=instrument.get("name"),
+                    price_symbol=_price_symbol(ticker) if ticker else None,
                 )
             )
         return drafts
@@ -250,17 +262,21 @@ class Trading212Adapter:
                     instrument_symbol=ticker or None,
                     asset_class=self._asset_class(ticker),
                     isin=instrument.get("isin"),
+                    instrument_name=instrument.get("name"),
+                    price_symbol=_price_symbol(ticker) if ticker else None,
                 )
             )
         return drafts
 
     def _cash_tx_drafts(self, since: datetime | None) -> list[TxDraft]:
-        params = {"limit": 50}
-        if since is not None:
-            params["time"] = since.astimezone(UTC).isoformat()
-        items = self._paginate(_TRANSACTIONS_PATH, params)
+        # `time` isn't a documented/verified query param for this endpoint —
+        # filter client-side, same as orders/dividends above.
+        items = self._paginate(_TRANSACTIONS_PATH, {"limit": 50})
         drafts: list[TxDraft] = []
         for item in items:
+            ts = _parse_dt(item["dateTime"])
+            if since is not None and ts < since:
+                continue
             tx_type = _TX_TYPE_MAP.get(item.get("type"))
             if tx_type is None:
                 continue  # e.g. TRANSFER — no TxType home yet, skip rather than guess
@@ -270,7 +286,7 @@ class Trading212Adapter:
             fx_source = None if currency == "EUR" else "pending"
             drafts.append(
                 TxDraft(
-                    ts=_parse_dt(item["dateTime"]),
+                    ts=ts,
                     type=tx_type,
                     amount_eur=amount_eur,
                     fx_source=fx_source,

@@ -100,6 +100,8 @@ class TxDraft(BaseModel):
     instrument_symbol: str | None = None
     asset_class: AssetClass | None = None
     isin: str | None = None
+    instrument_name: str | None = None
+    price_symbol: str | None = None
 
     @model_validator(mode="after")
     def _check_signs(self) -> TxDraft:
@@ -113,18 +115,37 @@ def get_or_create_instrument(
     asset_class: AssetClass | str,
     isin: str | None = None,
     name: str | None = None,
+    price_symbol: str | None = None,
     quote_ccy: str = "EUR",
 ) -> Instrument:
-    """Match on `(symbol, asset_class)`; create with the given metadata if absent."""
+    """Match on `(symbol, asset_class)`; create with the given metadata if
+    absent. On an existing row, backfill `isin`/`name`/`price_symbol` only
+    where that field is still `None` — never overwrite a value someone (or
+    an earlier import) already set. `price_source` is set to `"stooq"`
+    whenever a `price_symbol` is newly set (create or backfill).
+    """
     instrument = session.execute(
         select(Instrument).where(
             Instrument.symbol == symbol, Instrument.asset_class == asset_class
         )
     ).scalar_one_or_none()
     if instrument is not None:
+        if isin is not None and instrument.isin is None:
+            instrument.isin = isin
+        if name is not None and instrument.name is None:
+            instrument.name = name
+        if price_symbol is not None and instrument.price_symbol is None:
+            instrument.price_symbol = price_symbol
+            instrument.price_source = "stooq"
         return instrument
     instrument = Instrument(
-        symbol=symbol, asset_class=asset_class, isin=isin, name=name, quote_ccy=quote_ccy
+        symbol=symbol,
+        asset_class=asset_class,
+        isin=isin,
+        name=name,
+        price_symbol=price_symbol,
+        price_source="stooq" if price_symbol else None,
+        quote_ccy=quote_ccy,
     )
     session.add(instrument)
     session.flush()
@@ -165,7 +186,12 @@ def upsert_transactions(
         instrument_id = None
         if draft.instrument_symbol is not None:
             instrument = get_or_create_instrument(
-                session, draft.instrument_symbol, draft.asset_class, isin=draft.isin
+                session,
+                draft.instrument_symbol,
+                draft.asset_class,
+                isin=draft.isin,
+                name=draft.instrument_name,
+                price_symbol=draft.price_symbol,
             )
             instrument_id = instrument.id
 

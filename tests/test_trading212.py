@@ -6,7 +6,9 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
+import pytest
 
+from trade_ledger.adapters import trading212 as trading212_module
 from trade_ledger.adapters.trading212 import Trading212Adapter, _price_symbol
 from trade_ledger.enums import AssetClass, TxType
 
@@ -17,11 +19,11 @@ def _load(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text())
 
 
-def _adapter(handler) -> Trading212Adapter:
+def _adapter(handler, **kwargs) -> Trading212Adapter:
     client = httpx.Client(
         base_url="https://demo.trading212.com", transport=httpx.MockTransport(handler)
     )
-    return Trading212Adapter("key", "secret", demo=True, client=client)
+    return Trading212Adapter("key", "secret", demo=True, client=client, **kwargs)
 
 
 def _instruments_or(handler_for_others):
@@ -75,6 +77,8 @@ def test_buy_mapping_non_eur_leaves_amount_pending():
     assert buy.fx_source == "pending"
     assert buy.isin == "US0378331005"
     assert buy.asset_class == AssetClass.STOCK
+    assert buy.instrument_name == "Apple Inc"
+    assert buy.price_symbol == "aapl.us"
 
 
 def test_buy_mapping_eur_uses_filled_value():
@@ -129,22 +133,42 @@ def test_cash_transaction_mapping_skips_unmapped_types():
 
 def test_rate_limit_retries_after_429_then_succeeds():
     attempts = {"n": 0}
+    sleeps: list[float] = []
 
     def others(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/history/orders"):
             attempts["n"] += 1
             if attempts["n"] == 1:
-                return httpx.Response(
-                    429, headers={"x-ratelimit-reset": str(int(time.time()))}, json={}
-                )
+                # reset 5s in the future: proves the sleep duration is
+                # actually derived from the header, not a fixed 0/1s guess.
+                reset = str(int(time.time()) + 5)
+                return httpx.Response(429, headers={"x-ratelimit-reset": reset}, json={})
             return httpx.Response(200, json=_load("orders_page2.json"))
         return httpx.Response(200, json=_load("empty.json"))
 
-    adapter = _adapter(_instruments_or(others))
+    adapter = _adapter(_instruments_or(others), sleep_fn=sleeps.append)
     drafts = adapter.fetch_transactions(since=None)
 
     assert attempts["n"] == 2
+    assert len(sleeps) == 1
+    assert sleeps[0] > 0  # no real waiting happened — sleep_fn just recorded it
     assert any(d.type == TxType.BUY for d in drafts)
+
+
+def test_paginate_hard_cap_prevents_infinite_loop(monkeypatch):
+    """A handler that always advertises another page must not spin forever —
+    `_paginate` gives up after `_MAX_PAGES` and raises instead."""
+    monkeypatch.setattr(trading212_module, "_MAX_PAGES", 3)
+
+    def always_another_page(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"items": [], "nextPagePath": "/api/v0/equity/history/orders?cursor=next"},
+        )
+
+    adapter = _adapter(always_another_page)
+    with pytest.raises(RuntimeError, match="pagination exceeded"):
+        adapter._paginate("/api/v0/equity/history/orders", {"limit": 50})
 
 
 def test_price_symbol_heuristic():
