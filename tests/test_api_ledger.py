@@ -193,3 +193,25 @@ def test_post_duplicate_instrument_is_rejected(client):
     _create_instrument(client)
     resp = client.post("/api/instruments", json={"symbol": "BTC", "asset_class": "crypto"})
     assert resp.status_code == 422
+
+
+def test_naive_transaction_ts_is_read_as_utc(client):
+    account = _create_account(client)
+    instrument = _create_instrument(client)
+    resp = client.post(
+        "/api/transactions",
+        json={
+            "account_id": account["id"],
+            "ts": "2026-01-01T09:30:00",
+            "type": "buy",
+            "instrument_id": instrument["id"],
+            "quantity": "1",
+            "amount_eur": "100",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["ts"] == "2026-01-01T09:30:00Z"
+
+    listed = client.get("/api/transactions", params={"date_from": "2026-01-01T00:00:00"})
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] == 1
