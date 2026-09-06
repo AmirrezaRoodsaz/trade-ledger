@@ -1,0 +1,31 @@
+{
+  "items": [
+    {
+      "fill": {
+        "id": 9001,
+        "filledAt": "2026-08-01T10:00:00.000Z",
+        "price": 150.25,
+        "quantity": 2,
+        "type": "TRADE"
+      },
+      "order": {
+        "id": 5001,
+        "ticker": "AAPL_US_EQ",
+        "side": "BUY",
+        "quantity": 2,
+        "filledQuantity": 2,
+        "filledValue": null,
+        "currency": "USD",
+        "status": "FILLED",
+        "type": "MARKET",
+        "instrument": {
+          "ticker": "AAPL_US_EQ",
+          "isin": "US0378331005",
+          "name": "Apple Inc",
+          "currency": "USD"
+        }
+      }
+    }
+  ],
+  "nextPagePath": "/api/v0/equity/history/orders?cursor=222&limit=50"
+}

@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "amount": 1.2,
+      "amountInEuro": 1.1,
+      "currency": "USD",
+      "grossAmountPerShare": 0.6,
+      "instrument": {
+        "ticker": "AAPL_US_EQ",
+        "isin": "US0378331005",
+        "name": "Apple Inc",
+        "currency": "USD"
+      },
+      "paidOn": "2026-07-15T00:00:00.000Z",
+      "quantity": 2,
+      "reference": "div-ref-001",
+      "ticker": "AAPL_US_EQ",
+      "tickerCurrency": "USD",
+      "type": "ORDINARY"
+    }
+  ],
+  "nextPagePath": null
+}
