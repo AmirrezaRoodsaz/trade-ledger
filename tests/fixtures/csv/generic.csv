@@ -1,0 +1,7 @@
+date,type,symbol,asset_class,quantity,price,currency,fee,fee_currency,amount_eur,external_id,note
+2026-05-01T10:00:00+00:00,buy,BTC,crypto,0.2,40000,EUR,5,EUR,8000,GEN-001,
+2026-05-02T10:00:00+00:00,sell,BTC,crypto,0.1,42000,EUR,3,EUR,4200,GEN-002,
+2026-05-03T10:00:00+00:00,deposit,,,,,,,,1000,GEN-003,initial funding
+2026-05-04T10:00:00+00:00,withdrawal,,,,,,,,200,GEN-004,
+2026-05-05T10:00:00+00:00,dividend,AAPL,stock,,,,,,12.50,GEN-005,
+2026-05-06T10:00:00+00:00,not_a_type,AAPL,stock,1,,,,,,GEN-006,
