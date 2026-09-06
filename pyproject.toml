@@ -1,0 +1,40 @@
+[project]
+name = "trade-ledger"
+version = "0.1.0"
+description = "Local trade and investment logger: journal, portfolio and German tax record keeping."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "pydantic-settings",
+    "httpx",
+    "ccxt",
+    "python-dateutil",
+    "matplotlib",
+    "fpdf2",
+    "pyyaml",
+]
+
+[project.scripts]
+trade-ledger = "trade_ledger.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trade_ledger"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
