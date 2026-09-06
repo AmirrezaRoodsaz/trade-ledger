@@ -16,7 +16,7 @@ from ..db import get_session
 from ..engine import portfolio, returns
 from ..enums import TxType
 from ..models import Instrument, Price
-from ..prices.service import PriceMissing, candles, ensure_fx, ensure_prices
+from ..prices.service import PriceMissing, candles, ensure_fx, ensure_prices, fill_pending_eur
 from ._common import ModeFilter, get_instrument_or_404, resolve_account_ids
 from .schemas import BaseModel, Money
 
@@ -46,6 +46,7 @@ class RefreshIn(BaseModel):
 class RefreshOut(BaseModel):
     prices_written: int
     fx_written: int
+    filled_pending: int
 
 
 @router.post("/prices/refresh", response_model=RefreshOut)
@@ -67,7 +68,10 @@ def refresh_prices(payload: RefreshIn, session: Session = Depends(get_session)):
             fx_ccys.add(instrument.quote_ccy)
 
     fx_written = sum(ensure_fx(session, ccy, payload.start, payload.end) for ccy in fx_ccys)
-    return RefreshOut(prices_written=prices_written, fx_written=fx_written)
+    # Fresh rates/closes may finally value rows the importers left pending —
+    # across every account, since prices are not account-scoped.
+    filled = fill_pending_eur(session)
+    return RefreshOut(prices_written=prices_written, fx_written=fx_written, filled_pending=filled)
 
 
 @router.get("/prices/{instrument_id}", response_model=list[PriceOut])

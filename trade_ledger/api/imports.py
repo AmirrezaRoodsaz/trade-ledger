@@ -16,10 +16,13 @@ from ..enums import AssetClass, TxSource, TxType
 from ..importers import IMPORTERS, RowError
 from ..ledger import TxDraft, _hash_external_id, upsert_transactions
 from ..models import Account, SyncRun, Transaction
+from ..prices.service import fill_pending_eur
 from ._common import get_account_or_404
 from .schemas import BaseModel, Money
 
 router = APIRouter()
+
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 class TxDraftOut(BaseModel):
@@ -47,6 +50,8 @@ class TxDraftOut(BaseModel):
     instrument_symbol: str | None = None
     asset_class: AssetClass | None = None
     isin: str | None = None
+    instrument_name: str | None = None
+    price_symbol: str | None = None
 
 
 class ImportPreviewOut(BaseModel):
@@ -63,6 +68,7 @@ class ImportCommitIn(BaseModel):
 class ImportCommitOut(BaseModel):
     added: int
     skipped: int
+    filled_pending: int
 
 
 def _count_duplicates(session: Session, account: Account, drafts: list[TxDraft]) -> int:
@@ -101,6 +107,8 @@ async def preview_import(
         raise HTTPException(status_code=422, detail=f"unknown import format: {format!r}")
 
     data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="file larger than 20 MB")
     result = importer(data)
     duplicates = _count_duplicates(session, account, result.drafts)
     return ImportPreviewOut(
@@ -114,6 +122,7 @@ async def preview_import(
 def commit_import(payload: ImportCommitIn, session: Session = Depends(get_session)):
     account = get_account_or_404(session, payload.account_id)
     added, skipped = upsert_transactions(session, account, payload.drafts)
+    filled = fill_pending_eur(session, [account.id])
     session.add(
         SyncRun(
             account_id=account.id,
@@ -124,4 +133,4 @@ def commit_import(payload: ImportCommitIn, session: Session = Depends(get_sessio
         )
     )
     session.commit()
-    return ImportCommitOut(added=added, skipped=skipped)
+    return ImportCommitOut(added=added, skipped=skipped, filled_pending=filled)

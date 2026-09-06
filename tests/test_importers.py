@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
+
+from sqlalchemy import select
 
 from trade_ledger.enums import TxSource, TxType
 from trade_ledger.importers import IMPORTERS
 from trade_ledger.ledger import cash_delta_eur, upsert_transactions
+from trade_ledger.models import FxRate, Instrument
 
 FIXTURES = Path(__file__).parent / "fixtures" / "csv"
 
@@ -85,16 +89,21 @@ def test_kraken_importer():
 
 def test_binance_importer():
     result = IMPORTERS["binance"](_load("binance"))
-    assert len(result.drafts) == 6
+    assert len(result.drafts) == 7
     assert len(result.errors) == 1
     assert result.errors[0].row == 9  # Operation "Foo" is unrecognised
 
-    buy = next(d for d in result.drafts if d.type == TxType.BUY)
-    assert buy.instrument_symbol == "BTC"
+    buy = next(d for d in result.drafts if d.type == TxType.BUY and d.instrument_symbol == "BTC")
     assert buy.quantity == Decimal("0.10000000")
     assert buy.amount_eur == Decimal("4300.00000000")
     assert buy.fee_eur == Decimal("2.15000000")
     assert buy.external_id is None  # no natural id; upsert_transactions hashes it
+
+    # crypto-to-crypto swap: no fiat leg, so there is a price_ccy but no price
+    swap = next(d for d in result.drafts if d.instrument_symbol == "ETH" and d.type == TxType.BUY)
+    assert swap.price is None
+    assert swap.price_ccy == "BTC"
+    assert swap.fx_source == "pending"
 
     airdrop = next(d for d in result.drafts if d.type == TxType.AIRDROP)
     assert airdrop.instrument_symbol == "BNB"
@@ -131,6 +140,17 @@ def test_committing_an_import_twice_adds_nothing_the_second_time(session, accoun
     added2, skipped2 = upsert_transactions(session, account, result.drafts)
     assert added2 == 0
     assert skipped2 == 3
+
+
+def test_okx_import_gives_every_crypto_instrument_a_price_source(session, account_factory):
+    """Without this, OKX/Kraken holdings have no price source at all and every
+    valuation (portfolio, charts, MAE/MFE) renders "—".
+    """
+    upsert_transactions(session, account_factory(), IMPORTERS["okx"](_load("okx")).drafts)
+
+    instruments = session.execute(select(Instrument)).scalars().all()
+    assert {i.symbol for i in instruments} == {"BTC", "ETH", "SOL"}
+    assert {i.price_source for i in instruments} == {"bitstamp"}
 
 
 def _create_account(client, **overrides):
@@ -194,13 +214,43 @@ def test_commit_endpoint_is_idempotent_and_writes_a_sync_run(client):
         json={"account_id": account["id"], "drafts": preview["drafts"]},
     )
     assert first.status_code == 200, first.text
-    assert first.json() == {"added": 3, "skipped": 0}
+    assert first.json() == {"added": 3, "skipped": 0, "filled_pending": 0}
 
     second = client.post(
         "/api/imports/commit",
         json={"account_id": account["id"], "drafts": preview["drafts"]},
     )
-    assert second.json() == {"added": 0, "skipped": 3}
+    assert second.json() == {"added": 0, "skipped": 3, "filled_pending": 0}
 
     tx_count = client.get("/api/transactions", params={"account_id": account["id"]}).json()
     assert tx_count["total"] == 3
+
+
+def test_commit_endpoint_resolves_pending_eur_and_reports_the_count(client, session):
+    """A non-EUR import row is committed pending; the commit itself values it
+    when the rate is already cached, instead of leaving it for nobody.
+    """
+    account = _create_account(client)
+    session.add(FxRate(ccy="USD", date=date(2026, 2, 3), rate_to_eur=Decimal("0.92")))
+    session.commit()
+
+    draft = {
+        "ts": "2026-02-03T12:00:00Z",
+        "type": "buy",
+        "quantity": "5",
+        "price": "140",
+        "price_ccy": "USDT",
+        "amount_eur": "0",
+        "fx_source": "pending",
+        "source": "csv",
+        "instrument_symbol": "SOL",
+        "asset_class": "crypto",
+    }
+    resp = client.post(
+        "/api/imports/commit", json={"account_id": account["id"], "drafts": [draft]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"added": 1, "skipped": 0, "filled_pending": 1}
+    rows = client.get("/api/transactions", params={"account_id": account["id"]}).json()["items"]
+    assert rows[0]["amount_eur"] == "644.00"

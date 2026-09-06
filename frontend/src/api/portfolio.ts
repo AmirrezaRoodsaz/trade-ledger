@@ -60,6 +60,7 @@ export interface Returns {
 export interface RefreshResult {
   prices_written: number;
   fx_written: number;
+  filled_pending: number;
 }
 
 export interface TaxLot {

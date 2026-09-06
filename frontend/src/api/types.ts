@@ -190,6 +190,7 @@ export interface SyncRun {
   added: number;
   skipped: number;
   error: string | null;
+  filled_pending: number;
 }
 
 export interface Setting {
@@ -221,6 +222,8 @@ export interface TxDraft {
   instrument_symbol: string | null;
   asset_class: AssetClass | null;
   isin: string | null;
+  instrument_name: string | null;
+  price_symbol: string | null;
 }
 
 export interface RowError {
@@ -237,6 +240,7 @@ export interface ImportPreview {
 export interface ImportCommitResult {
   added: number;
   skipped: number;
+  filled_pending: number;
 }
 
 export interface InstrumentRef {

@@ -82,10 +82,13 @@ export function Portfolio() {
   const refresh = useAction();
 
   const accounts = useApi(() => get<Account[]>("/accounts"), []);
-  const visible = (accounts.data ?? []).filter(
-    (account) =>
-      (mode === "all" || account.mode === mode) &&
-      (accountIds.length === 0 || accountIds.includes(account.id)),
+  // Modes never mix, so the picker offers only the accounts the current mode
+  // can actually read — selecting one of another mode would just return nothing.
+  const inMode = (accounts.data ?? []).filter(
+    (account) => mode === "all" || account.mode === mode,
+  );
+  const visible = inMode.filter(
+    (account) => accountIds.length === 0 || accountIds.includes(account.id),
   );
 
   const holdings = useApi(
@@ -158,7 +161,7 @@ export function Portfolio() {
                 )
               }
             >
-              {(accounts.data ?? []).map((account) => (
+              {inMode.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name} ({account.mode})
                 </option>
@@ -223,7 +226,8 @@ export function Portfolio() {
           {refreshed !== null && refresh.error === null && (
             <span className="text-muted">
               {num(refreshed.prices_written, 0)} price(s) and {num(refreshed.fx_written, 0)} FX
-              rate(s) written for {fmtDate(from)} – {fmtDate(to)}.
+              rate(s) written for {fmtDate(from)} – {fmtDate(to)};{" "}
+              {num(refreshed.filled_pending, 0)} pending EUR amount(s) resolved.
             </span>
           )}
         </div>

@@ -196,6 +196,65 @@ def test_fill_pending_eur_leaves_row_pending_without_exception_when_rate_missing
     assert tx.amount_eur == Decimal(0)
 
 
+def test_fill_pending_eur_values_in_kind_reward_from_the_cached_close(
+    session, account_factory, instrument_factory
+):
+    """A staking reward has a quantity and no price at all — its EUR value can
+    only come from the instrument's own close.
+    """
+    account = account_factory()
+    instrument = instrument_factory(symbol="ETH")
+    ts = datetime(2026, 4, 4, 11, tzinfo=UTC)
+    session.add(
+        Price(
+            instrument_id=instrument.id,
+            date=ts.date(),
+            close=Decimal(2000),
+            ccy="EUR",
+            source="bitstamp",
+        )
+    )
+    tx = Transaction(
+        account_id=account.id,
+        ts=ts,
+        type=TxType.STAKING_REWARD,
+        instrument_id=instrument.id,
+        quantity=Decimal("0.005"),
+        fx_source="pending",
+        source=TxSource.CSV,
+    )
+    session.add(tx)
+    session.commit()
+
+    assert service.fill_pending_eur(session) == 1
+    session.refresh(tx)
+    assert tx.fx_source == "close"
+    assert tx.amount_eur == Decimal(10)
+
+
+def test_fill_pending_eur_never_raises_on_a_priceless_row_with_a_price_ccy(
+    session, account_factory
+):
+    """The binance crypto-to-crypto swap: `price_ccy` set, `price` None. This
+    used to raise TypeError and take the whole import/sync down with it.
+    """
+    from pathlib import Path as _Path
+
+    from trade_ledger.importers import IMPORTERS
+    from trade_ledger.ledger import upsert_transactions
+
+    account = account_factory()
+    fixture = _Path(__file__).parent / "fixtures" / "csv" / "binance.csv"
+    upsert_transactions(session, account, IMPORTERS["binance"](fixture.read_bytes()).drafts)
+
+    assert service.fill_pending_eur(session, [account.id]) == 0
+
+    swap = session.execute(
+        select(Transaction).where(Transaction.price_ccy == "BTC")
+    ).scalar_one()
+    assert swap.fx_source == "pending"  # unvaluable, but counted rather than fatal
+
+
 # --- service.get_close / get_close_eur / candles ----------------------------
 
 

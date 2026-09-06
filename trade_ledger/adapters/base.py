@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from ..enums import Mode, Venue
 from ..ledger import TxDraft, upsert_transactions
 from ..models import Account, SyncRun
+from ..prices.service import fill_pending_eur
 from ..settings import Settings, env_values
 
 
@@ -140,6 +141,12 @@ def sync_account(session: Session, account: Account, settings: Settings) -> Sync
         close = getattr(adapter, "close", None)
         if callable(close):
             close()
+
+    # Newly imported non-EUR rows land `fx_source="pending"`; resolve what the
+    # cached rates/closes already cover before the run is called done.
+    # ponytail: not an attribute on `SyncRun` — the count is interesting to
+    # the caller of this one sync, not worth a column and a migration.
+    run.filled_pending = fill_pending_eur(session, [account.id])
 
     run.status = "ok"
     run.added = added

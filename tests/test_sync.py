@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -8,9 +8,9 @@ from sqlalchemy import func, select
 
 from trade_ledger.adapters import base as adapters_base
 from trade_ledger.adapters.ccxt_adapter import CcxtAdapter
-from trade_ledger.enums import TxSource, TxType, Venue
+from trade_ledger.enums import AssetClass, TxSource, TxType, Venue
 from trade_ledger.ledger import TxDraft
-from trade_ledger.models import Transaction
+from trade_ledger.models import FxRate, Transaction
 from trade_ledger.settings import Settings
 
 
@@ -81,6 +81,39 @@ def test_sync_account_ok_run_then_second_sync_skips_duplicates(
 
     tx_count = session.execute(select(func.count()).select_from(Transaction)).scalar()
     assert tx_count == 1
+
+
+def test_sync_account_fills_pending_eur_before_finishing(session, account_factory, monkeypatch):
+    """Adapters mark non-EUR rows `fx_source="pending"`; nothing used to resolve
+    them outside the test suite, so crypto values stayed at 0 forever.
+    """
+    account = account_factory(venue=Venue.TRADING212, credential_env_prefix="T212_TEST")
+    session.add(FxRate(ccy="USD", date=date(2026, 1, 1), rate_to_eur=Decimal("0.90")))
+    session.commit()
+    draft = TxDraft(
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        type=TxType.BUY,
+        quantity=Decimal(2),
+        price=Decimal(50),
+        price_ccy="USD",
+        amount_eur=Decimal(0),
+        fx_source="pending",
+        external_id="tx:buy-1",
+        source=TxSource.API,
+        instrument_symbol="ETH",
+        asset_class=AssetClass.CRYPTO,
+    )
+    monkeypatch.setattr(
+        adapters_base, "build_adapter", lambda acct, settings: _StubAdapter([draft])
+    )
+
+    run = adapters_base.sync_account(session, account, Settings())
+
+    assert run.status == "ok"
+    assert run.filled_pending == 1
+    tx = session.execute(select(Transaction)).scalar_one()
+    assert tx.fx_source == "ecb"
+    assert tx.amount_eur == Decimal(90)
 
 
 class _FakeCcxtExchange:

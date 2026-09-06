@@ -25,6 +25,9 @@ class SyncRunOut(BaseModel):
     added: int
     skipped: int
     error: str | None
+    # Pending-EUR rows this run resolved. Not a `SyncRun` column — `sync_account`
+    # sets it on the returned instance; an errored run never gets there, hence 0.
+    filled_pending: int = 0
 
 
 @router.post("/accounts/{account_id}/sync", response_model=SyncRunOut)

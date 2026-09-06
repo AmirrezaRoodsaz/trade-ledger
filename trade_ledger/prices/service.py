@@ -142,9 +142,17 @@ def ensure_fx(
 
 
 def fill_pending_eur(session: Session, account_ids: list[int] | None = None) -> int:
-    """Resolve `fx_source == "pending"` transactions once an FX rate exists
-    for their date. Rows still missing a rate are left pending (no exception
-    propagates). Returns the number of rows updated.
+    """Value `fx_source == "pending"` transactions, two ways:
+
+    * a priced row (`price` + `price_ccy`) converts at that currency's ECB
+      rate and ends up `fx_source="ecb"`;
+    * an in-kind row (staking reward, airdrop, crypto-to-crypto swap — a
+      quantity and no price at all) is valued off its instrument's own cached
+      close and ends up `fx_source="close"`.
+
+    Anything still unvaluable — no rate, no cached close, no instrument —
+    stays pending. No exception propagates. Returns the number of rows
+    updated.
     """
     stmt = select(Transaction).where(Transaction.fx_source == "pending")
     if account_ids is not None:
@@ -152,15 +160,29 @@ def fill_pending_eur(session: Session, account_ids: list[int] | None = None) -> 
 
     updated = 0
     for tx in session.execute(stmt).scalars():
+        on = tx.ts.date()
         try:
-            price_fx = get_fx(session, tx.price_ccy, tx.ts.date())
-            fee_fx = get_fx(session, tx.fee_ccy or "EUR", tx.ts.date())
+            fee_fx = get_fx(session, tx.fee_ccy or "EUR", on)
+            if tx.price is not None and tx.price_ccy is not None:
+                fx_rate: Decimal | None = get_fx(session, tx.price_ccy, on)
+                amount_eur = tx.quantity * tx.price * fx_rate
+                fx_source = "ecb"
+            else:
+                instrument = (
+                    session.get(Instrument, tx.instrument_id)
+                    if tx.instrument_id is not None
+                    else None
+                )
+                close_eur = get_close_eur(session, instrument, on) if instrument else None
+                if close_eur is None:
+                    continue
+                fx_rate, amount_eur, fx_source = None, tx.quantity * close_eur, "close"
         except PriceMissing:
             continue
-        tx.amount_eur = tx.quantity * tx.price * price_fx
+        tx.amount_eur = amount_eur
         tx.fee_eur = tx.fee * fee_fx
-        tx.fx_rate = price_fx
-        tx.fx_source = "ecb"
+        tx.fx_rate = fx_rate
+        tx.fx_source = fx_source
         updated += 1
     session.commit()
     return updated
