@@ -1,12 +1,5 @@
 """CSV import endpoints: preview a file against `IMPORTERS` without writing
 anything, then commit the (possibly user-edited) drafts.
-
-`preview` takes the raw file body plus `format`/`account_id` as query
-params rather than a true `multipart/form-data` upload — the brief's
-literal transport needs `python-multipart`, which isn't a project
-dependency and "Do NOT add dependencies" is a hard constraint here. This is
-the simplest reading that keeps the same three inputs (file bytes, format,
-account) without a new dependency; flagged in the task report.
 """
 
 from __future__ import annotations
@@ -14,7 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -97,9 +90,9 @@ def _count_duplicates(session: Session, account: Account, drafts: list[TxDraft])
 
 @router.post("/imports/preview", response_model=ImportPreviewOut)
 async def preview_import(
-    format: str,
-    account_id: int,
-    request: Request,
+    file: UploadFile = File(...),
+    format: str = Form(...),
+    account_id: int = Form(...),
     session: Session = Depends(get_session),
 ):
     account = get_account_or_404(session, account_id)
@@ -107,7 +100,7 @@ async def preview_import(
     if importer is None:
         raise HTTPException(status_code=422, detail=f"unknown import format: {format!r}")
 
-    data = await request.body()
+    data = await file.read()
     result = importer(data)
     duplicates = _count_duplicates(session, account, result.drafts)
     return ImportPreviewOut(

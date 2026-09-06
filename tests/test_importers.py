@@ -124,8 +124,9 @@ def _create_account(client, **overrides):
 def test_preview_endpoint_returns_drafts_errors_and_duplicate_count(client):
     account = _create_account(client)
     resp = client.post(
-        f"/api/imports/preview?format=okx&account_id={account['id']}",
-        content=_load("okx"),
+        "/api/imports/preview",
+        files={"file": ("okx.csv", _load("okx"), "text/csv")},
+        data={"format": "okx", "account_id": account["id"]},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -138,8 +139,9 @@ def test_preview_endpoint_returns_drafts_errors_and_duplicate_count(client):
 def test_preview_endpoint_rejects_unknown_format(client):
     account = _create_account(client)
     resp = client.post(
-        f"/api/imports/preview?format=nope&account_id={account['id']}",
-        content=b"",
+        "/api/imports/preview",
+        files={"file": ("empty.csv", b"", "text/csv")},
+        data={"format": "nope", "account_id": account["id"]},
     )
     assert resp.status_code == 422
 
@@ -147,8 +149,9 @@ def test_preview_endpoint_rejects_unknown_format(client):
 def test_commit_endpoint_is_idempotent_and_writes_a_sync_run(client):
     account = _create_account(client)
     preview = client.post(
-        f"/api/imports/preview?format=okx&account_id={account['id']}",
-        content=_load("okx"),
+        "/api/imports/preview",
+        files={"file": ("okx.csv", _load("okx"), "text/csv")},
+        data={"format": "okx", "account_id": account["id"]},
     ).json()
 
     first = client.post(
