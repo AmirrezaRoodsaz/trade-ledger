@@ -1,0 +1,16 @@
+[
+  {
+    "ticker": "AAPL_US_EQ",
+    "isin": "US0378331005",
+    "name": "Apple Inc",
+    "currencyCode": "USD",
+    "type": "STOCK"
+  },
+  {
+    "ticker": "VWCEd_EQ",
+    "isin": "IE00BK5BQT80",
+    "name": "Vanguard FTSE All-World UCITS ETF",
+    "currencyCode": "EUR",
+    "type": "ETF"
+  }
+]

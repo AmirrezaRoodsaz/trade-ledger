@@ -1,0 +1,31 @@
+{
+  "items": [
+    {
+      "fill": {
+        "id": 9002,
+        "filledAt": "2026-08-02T11:30:00.000Z",
+        "price": 105.5,
+        "quantity": 3,
+        "type": "TRADE"
+      },
+      "order": {
+        "id": 5002,
+        "ticker": "VWCEd_EQ",
+        "side": "BUY",
+        "quantity": 3,
+        "filledQuantity": 3,
+        "filledValue": 316.5,
+        "currency": "EUR",
+        "status": "FILLED",
+        "type": "MARKET",
+        "instrument": {
+          "ticker": "VWCEd_EQ",
+          "isin": "IE00BK5BQT80",
+          "name": "Vanguard FTSE All-World UCITS ETF",
+          "currency": "EUR"
+        }
+      }
+    }
+  ],
+  "nextPagePath": null
+}

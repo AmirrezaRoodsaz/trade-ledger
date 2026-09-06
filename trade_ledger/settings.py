@@ -54,3 +54,11 @@ def env_status() -> dict[str, bool]:
     """Presence (non-empty) of each `.env.example` key. Values are never returned."""
     from_file = _parse_env_file(_ENV_FILE)
     return {key: bool(from_file.get(key) or os.environ.get(key)) for key in _example_keys()}
+
+
+def env_values() -> dict[str, str]:
+    """All `key=value` pairs from `.env`. For callers (adapter `credentials()`)
+    that need the actual values rather than presence — they own not leaking
+    them further.
+    """
+    return _parse_env_file(_ENV_FILE)
