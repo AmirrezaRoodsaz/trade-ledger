@@ -16,7 +16,7 @@ from ..enums import TxSource, TxType
 from ..ledger import check_non_negative_amounts
 from ..models import Instrument, Transaction
 from ._common import get_account_or_404
-from .schemas import BaseModel, Money, Page
+from .schemas import BaseModel, Money, Page, UTCDatetime
 
 router = APIRouter()
 
@@ -25,7 +25,7 @@ _COLUMNS = [c.name for c in Transaction.__table__.columns]
 
 class TransactionIn(BaseModel):
     account_id: int
-    ts: datetime
+    ts: UTCDatetime
     type: TxType
     instrument_id: int | None = None
     quantity: Money = Decimal(0)
@@ -80,8 +80,8 @@ def list_transactions(
     account_id: int | None = None,
     type: TxType | None = None,
     instrument_id: int | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_from: UTCDatetime | None = None,
+    date_to: UTCDatetime | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
@@ -105,8 +105,8 @@ def export_transactions_csv(
     account_id: int | None = None,
     type: TxType | None = None,
     instrument_id: int | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_from: UTCDatetime | None = None,
+    date_to: UTCDatetime | None = None,
     session: Session = Depends(get_session),
 ):
     filtered = _apply_filters(
