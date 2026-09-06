@@ -133,34 +133,36 @@ def test_sync_endpoint_creates_and_lists_sync_runs(client, monkeypatch):
 
 
 def test_build_adapter_unsupported_venue_raises_not_implemented(account_factory):
-    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
-    with pytest.raises(NotImplementedError, match="okx"):
+    # OKX/Kraken are wired up as of the ccxt adapter — Binance stays
+    # unimplemented, so it's the stand-in for "unsupported venue" here.
+    account = account_factory(venue=Venue.BINANCE, credential_env_prefix="BINANCE_TEST")
+    with pytest.raises(NotImplementedError, match="binance"):
         adapters_base.build_adapter(account, Settings())
 
 
 def test_sync_account_unsupported_venue_finishes_as_error_not_stuck_running(
     session, account_factory
 ):
-    account = account_factory(venue=Venue.OKX, credential_env_prefix="OKX_TEST")
+    account = account_factory(venue=Venue.BINANCE, credential_env_prefix="BINANCE_TEST")
 
     run = adapters_base.sync_account(session, account, Settings())
 
     assert run.status == "error"
-    assert run.error == "adapter for okx not available"
+    assert run.error == "adapter for binance not available"
     assert run.finished is not None
     tx_count = session.execute(select(func.count()).select_from(Transaction)).scalar()
     assert tx_count == 0
 
 
-def test_sync_endpoint_okx_account_returns_error_run_not_500(client):
+def test_sync_endpoint_binance_account_returns_error_run_not_500(client):
     resp = client.post(
         "/api/accounts",
         json={
-            "venue": "okx",
-            "name": "okx-main",
+            "venue": "binance",
+            "name": "binance-main",
             "kind": "crypto_spot",
             "mode": "live",
-            "credential_env_prefix": "OKX_TEST",
+            "credential_env_prefix": "BINANCE_TEST",
         },
     )
     account = resp.json()
@@ -170,4 +172,4 @@ def test_sync_endpoint_okx_account_returns_error_run_not_500(client):
     assert sync_resp.status_code == 200, sync_resp.text
     body = sync_resp.json()
     assert body["status"] == "error"
-    assert body["error"] == "adapter for okx not available"
+    assert body["error"] == "adapter for binance not available"
