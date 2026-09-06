@@ -1,8 +1,7 @@
 """`trade-ledger` command line entry point.
 
 `serve`, `import`, `export-notes`, `import-notes`, `prices --refresh`,
-`tax-year` and `report` are implemented here. `sync` is still a stub that
-prints "not yet implemented" — Task 3 fills it in.
+`tax-year`, `report` and `sync` are implemented here.
 """
 
 from __future__ import annotations
@@ -29,13 +28,41 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .main import create_app
 
     settings = get_settings()
-    uvicorn.run(create_app(), host=settings.HOST, port=settings.PORT)
+    port = args.port or settings.PORT
+    url = f"http://{settings.HOST}:{port}"
+    if not args.no_browser:
+        import threading
+        import webbrowser
+
+        # ponytail: a timer rather than a uvicorn startup hook — uvicorn.run
+        # blocks, and one second is long enough for the socket to be up.
+        threading.Timer(1.0, webbrowser.open, [url]).start()
+    print(f"trade-ledger on {url}")
+    uvicorn.run(create_app(), host=settings.HOST, port=port)
     return 0
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
-    print("sync: not yet implemented")
-    return 0
+    from .adapters.base import sync_account
+    from .models import Account
+
+    settings = get_settings()
+    db.init_db(settings.DB_PATH)
+    with db.SessionLocal() as session:
+        stmt = select(Account)
+        if not args.all:
+            stmt = stmt.where(Account.name == args.account)
+        accounts = list(session.execute(stmt).scalars())
+        if not accounts:
+            print("no accounts to sync" if args.all else f"unknown account: {args.account}")
+            return 0 if args.all else 1
+        failed = False
+        for account in accounts:
+            run = sync_account(session, account, settings)
+            detail = f" ({run.error})" if run.error else ""
+            print(f"{account.name}: {run.status}, added {run.added}, skipped {run.skipped}{detail}")
+            failed = failed or run.status != "ok"
+    return 1 if failed else 0
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -145,7 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trade-ledger")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("serve").set_defaults(func=_cmd_serve)
+    p_serve = sub.add_parser("serve")
+    p_serve.add_argument("--port", type=int, default=None, help="override PORT from .env")
+    p_serve.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    p_serve.set_defaults(func=_cmd_serve)
 
     p_sync = sub.add_parser("sync")
     account_group = p_sync.add_mutually_exclusive_group(required=True)

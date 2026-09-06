@@ -3,7 +3,7 @@
  */
 
 import { get, post } from "./client";
-import type { Holding, ModeFilter, TxType, ValueSeries } from "./types";
+import type { Holding, ModeFilter, TaxRegime, TxType, ValueSeries } from "./types";
 
 export interface PortfolioFilters {
   accountIds: number[];
@@ -69,6 +69,7 @@ export interface TaxLot {
   acquired: string;
   quantity: string;
   cost_eur: string;
+  regime: TaxRegime;
 }
 
 export interface TaxLots {
@@ -108,13 +109,15 @@ export const refreshPrices = (start: string, end: string) =>
 export const HOLDING_PERIOD_DAYS = 365;
 
 /** Days left until the holding turns steuerfrei, by symbol — negative once it
- * already is. ponytail: one number per symbol, taken from the *oldest* open
- * lot, which is the one FIFO sells first and the one that frees up first.
- * Per-lot detail lives on the Steuer page.
+ * already is. Non-§ 23 lots (shares, funds, Termingeschaefte) have no holding
+ * period at all and are left out entirely. ponytail: one number per symbol,
+ * taken from the *oldest* open lot, which is the one FIFO sells first and the
+ * one that frees up first. Per-lot detail lives on the Steuer page.
  */
 export function daysToTaxFree(lots: TaxLot[], today: Date = new Date()): Record<string, number> {
   const out: Record<string, number> = {};
   for (const lot of lots) {
+    if (lot.regime !== "p23") continue;
     const held = Math.floor((today.getTime() - new Date(lot.acquired).getTime()) / 86_400_000);
     const left = HOLDING_PERIOD_DAYS - held;
     const current = out[lot.symbol];

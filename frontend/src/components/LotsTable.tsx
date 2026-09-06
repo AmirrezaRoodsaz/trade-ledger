@@ -28,13 +28,17 @@ export function LotsTable({ lots }: { lots: Lot[] }) {
         {
           key: "free_from",
           header: "steuerfrei ab",
-          render: (row) => date(taxFreeFrom(row.acquired).toISOString()),
+          render: (row) =>
+            row.regime === "p23" ? date(taxFreeFrom(row.acquired).toISOString()) : "—",
         },
         {
           key: "countdown",
           header: "Restfrist",
           align: "right",
           render: (row) => {
+            // Only § 23 knows a holding period. Shares, funds and
+            // Termingeschaefte stay taxable however long they are held.
+            if (row.regime !== "p23") return "—";
             const days = Math.ceil((taxFreeFrom(row.acquired).getTime() - now) / DAY_MS);
             return days <= 0 ? (
               <span className="text-pos">steuerfrei</span>

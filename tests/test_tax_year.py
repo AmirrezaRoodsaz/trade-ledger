@@ -341,6 +341,18 @@ def test_disposals_lots_and_export_routes(client, okx, btc, tx_factory):
     assert "Integration Name" in export.text
 
 
+def test_lots_carry_the_regime_a_disposal_would_fall_under(
+    client, okx, broker, btc, etf, tx_factory
+):
+    """Only crypto spot lots are § 23 — an ETF lot has no Spekulationsfrist."""
+    tx_factory(okx, btc, TxType.BUY, ts(2025, 8, 1), quantity=D(1), amount_eur=D(9000))
+    tx_factory(broker, etf, TxType.BUY, ts(2025, 8, 2), quantity=D(10), amount_eur=D(1000))
+
+    lots = client.get("/api/tax/2025/lots?mode=live").json()["lots"]
+
+    assert {lot["symbol"]: lot["regime"] for lot in lots} == {"BTC": "p23", "VWCE": "p20_inv"}
+
+
 def test_anlage_route_notes_a_year_without_a_line_mapping(client, okx, btc, tx_factory):
     _crypto_year(okx, btc, tx_factory, D(11200))
 
