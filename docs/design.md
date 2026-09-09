@@ -472,6 +472,10 @@ The Bots area is three pages: `/bots` (the fleet, one card per bot with its
 status light, kill-rule chips and readiness ring), `/bots/:slug` (Overview,
 Strategy, Runs, Timeline, Config, Controls, Alerts) and `/bots/presets`.
 
+A `# ponytail:` comment marks a deliberate simplification and names its
+ceiling — what the shortcut cannot do and what to reach for when it stops being
+enough. It is a note to the next reader, not a TODO.
+
 ## Testing
 
 `uv run pytest -q` — the engines and the tax module are tested as pure

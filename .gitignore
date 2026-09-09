@@ -5,6 +5,7 @@
 # data / generated
 *.db
 data/
+bots/strategies/
 exports/
 screenshots/
 notes_out/

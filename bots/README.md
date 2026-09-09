@@ -102,6 +102,17 @@ so `schedule_every_s` must be `14400`. Change one, change the other.
 `TRADE_LEDGER_URL` in the env file must point at the app over the network, and
 that endpoint must be TLS — the bot token travels on every request.
 
+**Exposing the app is the whole security decision.** Every route except the
+bot-token push endpoints is unauthenticated: the app was written to bind
+`127.0.0.1` and be the only thing on the machine. The moment a VPS can reach
+it, anything else that can reach it owns the journal, the tax data and the
+control buttons. So put it behind TLS *and* an access control that is not the
+bot token — a VPN, an SSH tunnel, or a reverse proxy with its own
+authentication and an IP allow-list — and treat the bot token as a bot's
+identity, never as the door. And keep the timer's `OnCalendar` in step with the
+bot's `schedule_every_s`: a timer that fires less often than the registry says
+trips K5 every cycle.
+
 ## What the bot refuses to do
 
 - **No app, no order.** Every entry is journalled before the order exists, and
