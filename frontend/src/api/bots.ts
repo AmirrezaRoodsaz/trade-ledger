@@ -96,7 +96,8 @@ export interface Position {
   avg_entry: string | null;
   stop_present: boolean;
   stop_price: string | null;
-  unrealised_eur: string | null;
+  /** In the market's quote currency (USDT on a USDT pair), not EUR. */
+  unrealised_quote: string | null;
 }
 
 export interface BotHealth {

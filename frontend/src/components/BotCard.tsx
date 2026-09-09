@@ -34,6 +34,7 @@ export function TokenBox({ slug, token }: { slug: string; token: string }) {
       <div className="mt-1 flex gap-2">
         <input
           className="field font-mono"
+          aria-label={`Bot token for ${slug}`}
           readOnly
           value={token}
           onFocus={(event) => event.target.select()}
@@ -163,6 +164,11 @@ export function BotCard({
           {bot.dry_run && <span className="rounded border border-line px-1 text-[10px]">dry run</span>}
           {bot.paused_entries && (
             <span className="rounded border border-live px-1 text-[10px] text-live">no entries</span>
+          )}
+          {account !== undefined && (
+            <span className="rounded border border-line px-1 text-[10px] uppercase leading-4 tracking-wide">
+              {account.venue}
+            </span>
           )}
           {account !== undefined && <ModeBadge mode={account.mode} />}
         </span>

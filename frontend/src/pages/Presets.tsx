@@ -132,6 +132,7 @@ function AssignCell({
     <div className="flex flex-col gap-1">
       <select
         className="field w-44"
+        aria-label={`Assign v${version.version} to a bot`}
         value={slug}
         onChange={(event) => {
           setSlug(event.target.value);
@@ -149,6 +150,7 @@ function AssignCell({
       {needsReason && (
         <input
           className="field w-44"
+          aria-label="Reason for assigning to a live bot"
           placeholder="reason (live bot)"
           value={reason}
           onChange={(event) => setReason(event.target.value)}

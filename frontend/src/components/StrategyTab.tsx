@@ -164,6 +164,7 @@ function UploadBox({ bot, onUploaded }: { bot: Bot; onUploaded: () => void }) {
         <p>{action.busy ? "Uploading…" : "Drop a backtest JSON here"}</p>
         <input
           className="field mt-2"
+          aria-label="Backtest JSON file"
           type="file"
           accept="application/json,.json"
           disabled={action.busy}

@@ -1,6 +1,6 @@
 import type { Position } from "../api/bots";
 import { DataTable } from "./DataTable";
-import { eur, num, signClass } from "../fmt";
+import { num, signClass } from "../fmt";
 
 /** What the bot last reported it holds. A position without a stop is the one
  * thing on this page that has to shout — K4 treats it as an integrity breach. */
@@ -26,10 +26,12 @@ export function PositionsTable({ positions }: { positions: Position[] }) {
         },
         {
           key: "unrealised",
-          header: "Unrealised",
+          // The venue reports it in the market's quote currency; the bot
+          // passes it through untouched, so it is not a EUR number.
+          header: "Unrealised (quote)",
           align: "right",
           render: (p) => (
-            <span className={signClass(p.unrealised_eur)}>{eur(p.unrealised_eur)}</span>
+            <span className={signClass(p.unrealised_quote)}>{num(p.unrealised_quote, 2)}</span>
           ),
         },
       ]}
