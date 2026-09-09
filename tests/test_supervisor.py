@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from trade_ledger.bots import commands, supervisor
+from trade_ledger.bots import commands, monitor, supervisor
 from trade_ledger.enums import AlertSeverity, CommandKind, EventKind
 from trade_ledger.models import Alert, BotEvent, BotRun
 
@@ -168,7 +168,26 @@ def test_launch_env_comes_from_the_bot_file_not_the_app(session, bot_factory, mo
     supervisor.reset()
     supervisor.launch(session, bot, now=NOW, popen=popen)
     assert popen.calls[1]["env"]["EXCHANGE_KEY"] == "from-file"
-    assert popen.calls[1]["env"]["TRADE_LEDGER_URL"] == "http://elsewhere"
+    # ...except the app's own URL, which the app is the authority on.
+    assert popen.calls[1]["env"]["TRADE_LEDGER_URL"] != "http://elsewhere"
+
+
+def test_launch_overrides_the_url_with_the_port_the_app_was_started_on(
+    session, bot_factory, monkeypatch
+):
+    """`cli serve --port` sets `APP_URL`; a child of this app talks to this
+    app, whatever the bot's env file (or the template) happens to say."""
+    bot = _due_bot(bot_factory)
+    _env_file(bot.slug, "BOT_TOKEN=t\nTRADE_LEDGER_URL=http://127.0.0.1:8000\n")
+    popen = FakePopen()
+
+    supervisor.launch(session, bot, now=NOW, popen=popen)
+    assert popen.calls[0]["env"]["TRADE_LEDGER_URL"] == "http://127.0.0.1:8642"
+
+    monkeypatch.setattr(supervisor, "APP_URL", "http://127.0.0.1:8799")
+    supervisor.reset()
+    supervisor.launch(session, bot, now=NOW, popen=popen)
+    assert popen.calls[1]["env"]["TRADE_LEDGER_URL"] == "http://127.0.0.1:8799"
 
 
 def test_launch_without_env_file_alerts_and_skips(session, bot_factory):
@@ -218,6 +237,35 @@ def test_reap_of_a_clean_exit_with_a_run_is_quiet(session, bot_factory):
 
     assert _alerts(session) == []
     assert _events(session, bot)[-1].message.endswith("exited 0")
+
+
+def test_reap_hangs_the_captured_log_on_the_run(session, bot_factory):
+    """The bot pushes a log only for a run it got as far as finishing, so a
+    crash leaves the supervisor's capture on disk with nothing pointing at it —
+    and `GET /runs/{id}/log` answering 404."""
+    bot = _due_bot(bot_factory)
+    started = supervisor.launch(session, bot, now=NOW, popen=_real_popen)
+    assert started.popen.wait(timeout=30) == 3
+    run = BotRun(bot_id=bot.id, started=NOW)
+    session.add(run)
+    session.flush()
+
+    supervisor.reap(session, NOW)
+
+    assert run.log_path == str(started.log_path)
+    assert "hello from the bot" in Path(run.log_path).read_text()
+
+
+def test_reap_does_not_overwrite_a_log_the_bot_pushed_itself(session, bot_factory):
+    bot = _due_bot(bot_factory)
+    supervisor.launch(session, bot, now=NOW, popen=FakePopen(code=0))
+    run = BotRun(bot_id=bot.id, started=NOW, log_path="/pushed/by/the/bot.log")
+    session.add(run)
+    session.flush()
+
+    supervisor.reap(session, NOW)
+
+    assert run.log_path == "/pushed/by/the/bot.log"
 
 
 def test_reap_leaves_a_running_process_alone(session, bot_factory):
@@ -321,17 +369,25 @@ def test_lifespan_starts_the_supervisor_and_registers_the_hook(monkeypatch):
 
     from trade_ledger.main import create_app
 
-    seen: list[str] = []
+    def idle(module) -> list[str]:
+        """Replace `module.loop` with one that records start and cancellation."""
+        recorded: list[str] = []
 
-    async def fake_loop(*args, **kwargs):
-        seen.append("started")
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            seen.append("cancelled")
-            raise
+        async def fake_loop(*args, **kwargs):
+            recorded.append("started")
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                recorded.append("cancelled")
+                raise
 
-    monkeypatch.setattr(supervisor, "loop", fake_loop)
+        monkeypatch.setattr(module, "loop", fake_loop)
+        return recorded
+
+    # Both loops, not only the supervisor's: a real monitor loop against this
+    # test's database is a second writer nobody asked for.
+    idle(monitor)
+    seen = idle(supervisor)
     monkeypatch.setattr(commands, "LAUNCH_HOOKS", [])
     with TestClient(create_app(db_path=":memory:", background=True)):
         assert seen == ["started"]

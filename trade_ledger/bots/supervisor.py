@@ -45,6 +45,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # attempt tells the operator nothing the alert has not already said.
 RESTART_CAP = 3
 
+# Where this process actually answers. `cli serve` sets it after it has parsed
+# `--port`, because that is the only place the real port is known — `.env` says
+# 8642 and the operator may have said otherwise. `None` until then (a test, or
+# an app embedded in something else), and `launch` falls back on the settings.
+APP_URL: str | None = None
+
 
 @dataclass
 class Launch:
@@ -101,12 +107,20 @@ def _count_failure(bot_id: int, now: datetime) -> None:
     _FAILURES[bot_id] = (now.date(), count + 1 if day == now.date() else 1)
 
 
-def _has_run_since(session: Session, bot: Bot, since: datetime) -> bool:
+def _run_since(session: Session, bot: Bot, since: datetime) -> BotRun | None:
+    """The run this launch produced, if it produced one. The newest, because
+    a run started after the child did is that child's — nothing else launches
+    a `local` bot.
+    """
     return (
         session.execute(
-            select(BotRun.id).where(BotRun.bot_id == bot.id, BotRun.started >= since).limit(1)
-        ).first()
-        is not None
+            select(BotRun)
+            .where(BotRun.bot_id == bot.id, BotRun.started >= since)
+            .order_by(BotRun.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
     )
 
 
@@ -205,7 +219,10 @@ def launch(
 
     settings = get_settings()
     env = {**os.environ, **env_values(env_file)}
-    env.setdefault("TRADE_LEDGER_URL", f"http://{settings.HOST}:{settings.PORT}")
+    # An override, not a default: a child of *this* app talks to *this* app.
+    # A stale URL in the bot's env file (the template's, say) would otherwise
+    # send the bot at a port nothing is listening on.
+    env["TRADE_LEDGER_URL"] = APP_URL or f"http://{settings.HOST}:{settings.PORT}"
 
     argv = [sys.executable, "-m", "trade_ledger.botkit.run", "--bot", bot.slug, "--once"]
     if bot.dry_run if dry_run is None else dry_run:
@@ -276,7 +293,8 @@ def reap(session: Session, now: datetime | None = None) -> None:
         # ponytail: checked on a clean exit too. A bot that returns 0 without
         # ever posting a run did nothing at all, which is the quieter and so
         # the more dangerous version of the same failure.
-        if not _has_run_since(session, bot, started.started):
+        run = _run_since(session, bot, started.started)
+        if run is None:
             raise_alert(
                 session,
                 bot,
@@ -285,6 +303,12 @@ def reap(session: Session, now: datetime | None = None) -> None:
                 f"{bot.slug} exited before starting a run; see {started.log_path}",
                 now=now,
             )
+        elif not run.log_path:
+            # Nobody else would: the bot pushes a log only for a run it got as
+            # far as finishing, and a crash is exactly the run whose output the
+            # operator wants. The UI reads `log_path`, so without this the
+            # captured stdout sits on disk with nothing pointing at it.
+            run.log_path = str(started.log_path)
         session.commit()
 
 
