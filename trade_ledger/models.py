@@ -354,3 +354,55 @@ class Alert(Base):
     message: Mapped[str] = mapped_column(String, default="")
     sent_telegram: Mapped[bool] = mapped_column(Boolean, default=False)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BacktestResult(Base):
+    """One uploaded (or bot-pushed) backtest run. The app never backtests —
+    it stores the numbers, judges them against the configured criteria and
+    keeps the verdict in `passed` / `fail_reasons_json`.
+    """
+
+    __tablename__ = "backtest_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy: Mapped[str] = mapped_column(String, nullable=False)
+    preset_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("preset_versions.id"), default=None
+    )
+    bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), default=None)
+    label: Mapped[str] = mapped_column(String, default="")
+    period_start: Mapped[date_] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date_] = mapped_column(Date, nullable=False)
+    data_source: Mapped[str] = mapped_column(String, default="")
+    timeframe: Mapped[str] = mapped_column(String, default="4h")
+    pairs_json: Mapped[str] = mapped_column(String, default="[]")
+    costs_note: Mapped[str] = mapped_column(String, default="")
+    trades: Mapped[int] = mapped_column(Integer, default=0)
+    expectancy_r: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
+    profit_factor: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    win_rate: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
+    max_drawdown_pct: Mapped[Decimal] = mapped_column(Money, default=Decimal(0))
+    cagr_pct: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    benchmark_cagr_pct: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    benchmark_max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    equity_json: Mapped[str | None] = mapped_column(String, default=None)
+    notes: Mapped[str] = mapped_column(String, default="")
+    passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    fail_reasons_json: Mapped[str] = mapped_column(String, default="[]")
+    created: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class BotDrill(Base):
+    """One manual checklist item per bot — the five drills of the readiness
+    stage B. A row exists only once the drill has been touched.
+    """
+
+    __tablename__ = "bot_drills"
+    __table_args__ = (UniqueConstraint("bot_id", "key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, default=False)
+    done_ts: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    note: Mapped[str | None] = mapped_column(String, default=None)
