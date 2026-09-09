@@ -242,3 +242,71 @@ export async function getRunLog(slug: string, runId: number): Promise<string> {
   }
   return response.text();
 }
+
+// --- strategy dashboard: results per stage, readiness, drills ---------------
+// `api/bot_strategy.py`. The readiness percent is already a percentage
+// (62.5 = 62,5 %); `progress` and `factor` are plain 0..1 factors.
+
+import type { StageGate } from "./analytics";
+import type { Backtest } from "./backtests";
+import { put } from "./client";
+
+/** One journal column — the same numbers as `Stats`, plus its stage gate. */
+export interface StageResult {
+  count: number;
+  expectancy_r: string;
+  profit_factor: string | null;
+  /** A ratio in 0..1, like the journal's. */
+  win_rate: string;
+  max_dd_r: string;
+  max_dd_eur: string;
+  adherence: string | null;
+  gate: StageGate;
+}
+
+export interface ReadinessStage {
+  key: string;
+  /** Share of the 100 % this stage can contribute (25 = 25 %). */
+  weight: string;
+  /** 0..1 — how far the stage itself got. */
+  progress: string;
+  /** 1, or 0,5 once the stage gate fails. */
+  factor: string;
+  detail: string;
+}
+
+export interface Readiness {
+  percent: string;
+  stages: ReadinessStage[];
+}
+
+export const DRILL_KEYS = [
+  "capability_test",
+  "dry_run",
+  "self_check",
+  "recovery_drill",
+  "scheduling",
+] as const;
+
+export interface Drill {
+  key: string;
+  done: boolean;
+  done_ts: string | null;
+  note: string | null;
+}
+
+export interface BotStrategy {
+  results: {
+    backtest: Backtest | null;
+    incubation: StageResult;
+    live: StageResult;
+  };
+  readiness: Readiness;
+  backtest: Backtest | null;
+  drills: Drill[];
+}
+
+export const getBotStrategy = (slug: string) => get<BotStrategy>(`/bots/${slug}/strategy`);
+
+export const setDrill = (slug: string, key: string, done: boolean, note: string | null) =>
+  put<Drill>(`/bots/${slug}/drills/${key}`, { done, note });

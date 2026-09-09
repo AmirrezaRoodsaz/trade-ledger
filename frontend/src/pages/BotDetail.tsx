@@ -25,9 +25,10 @@ import { KillRuleStatus, KillRuleTable } from "../components/KillRuleTable";
 import { PageHeader } from "../components/Layout";
 import { PositionsTable } from "../components/PositionsTable";
 import { RunLog } from "../components/RunLog";
+import { StrategyTab } from "../components/StrategyTab";
 import { DASH, dateTime, eur, num } from "../fmt";
 
-const TABS = ["Overview", "Runs", "Timeline", "Config", "Controls", "Alerts"] as const;
+const TABS = ["Overview", "Strategy", "Runs", "Timeline", "Config", "Controls", "Alerts"] as const;
 type Tab = (typeof TABS)[number];
 
 const POLL_MS = 30_000;
@@ -614,6 +615,7 @@ export function BotDetail() {
             ) : (
               <Overview slug={slug} health={health.data} />
             ))}
+          {tab === "Strategy" && <StrategyTab bot={bot.data} />}
           {tab === "Runs" && <Runs slug={slug} />}
           {tab === "Timeline" && <Timeline slug={slug} />}
           {tab === "Config" && (

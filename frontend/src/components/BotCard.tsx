@@ -13,6 +13,7 @@ import type { Account } from "../api/types";
 import { DASH, ago, date, dateTime, eur, num, toNumber } from "../fmt";
 import { Card } from "./Card";
 import { KillRulePanel, type KillRuleLike } from "./KillRulePanel";
+import { clampPercent } from "./ReadinessBar";
 import { ModeBadge } from "./ModeBadge";
 
 const LIGHT: Record<BotStatus, string> = {
@@ -66,25 +67,49 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-/** Readiness is already a percentage (62.5 = 62,5 %). */
-function ReadinessBar({ percent }: { percent: string | null }) {
+/** Readiness is already a percentage (62.5 = 62,5 %). A ring rather than a
+ * bar: the fleet grid reads it at a glance next to the status light.
+ */
+function ReadinessRing({ percent }: { percent: string | null }) {
   const value = toNumber(percent);
-  const share = value === null ? 0 : Math.min(100, Math.max(0, value));
+  const share = clampPercent(percent);
+  // r = 18 → circumference 2πr; the arc is drawn as the first dash.
+  const circumference = 2 * Math.PI * 18;
   return (
-    <div className="mt-3">
-      <div className="flex justify-between">
-        <span className="label">Readiness</span>
-        <span>{value === null ? DASH : `${num(percent, 1)} %`}</span>
-      </div>
-      <div
-        className="mt-1 h-1 w-full rounded bg-surface2"
+    <div className="mt-3 flex items-center gap-3">
+      <svg
+        width="44"
+        height="44"
+        viewBox="0 0 44 44"
         role="progressbar"
         aria-label="Readiness"
         aria-valuenow={Number(share.toFixed(1))}
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <div className="h-1 rounded bg-accent" style={{ width: `${share.toFixed(1)}%` }} />
+        <circle
+          cx="22"
+          cy="22"
+          r="18"
+          fill="none"
+          strokeWidth="4"
+          className="stroke-line"
+        />
+        <circle
+          cx="22"
+          cy="22"
+          r="18"
+          fill="none"
+          strokeWidth="4"
+          strokeLinecap="round"
+          className="stroke-accent"
+          strokeDasharray={`${(circumference * share) / 100} ${circumference}`}
+          transform="rotate(-90 22 22)"
+        />
+      </svg>
+      <div>
+        <p className="label">Readiness</p>
+        <p className="text-[15px]">{value === null ? DASH : `${num(percent, 1)} %`}</p>
       </div>
     </div>
   );
@@ -175,7 +200,7 @@ export function BotCard({
         <Field label="Kill rules" value={<KillRulePanel rules={rules} />} />
       </div>
 
-      <ReadinessBar percent={readiness} />
+      <ReadinessRing percent={readiness} />
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" className="btn" disabled={action.busy} onClick={command("pause", "Pause")}>
