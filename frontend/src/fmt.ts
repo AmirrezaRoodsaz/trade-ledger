@@ -76,6 +76,26 @@ export function dateTime(iso: string | null | undefined): string {
   })}`;
 }
 
+/** How long ago (or from now) a timestamp is: "12 min ago", "in 3 h".
+ * Coarse on purpose — a heartbeat is either fresh or it is not.
+ */
+export function ago(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return DASH;
+  const parsed = new Date(iso).getTime();
+  if (Number.isNaN(parsed)) return DASH;
+  const seconds = Math.round((now - parsed) / 1000);
+  const size = Math.abs(seconds);
+  const [count, unit] =
+    size < 60
+      ? [size, "s"]
+      : size < 3600
+        ? [Math.floor(size / 60), "min"]
+        : size < 86_400
+          ? [Math.floor(size / 3600), "h"]
+          : [Math.floor(size / 86_400), "d"];
+  return seconds < 0 ? `in ${count} ${unit}` : `${count} ${unit} ago`;
+}
+
 /** ISO date (YYYY-MM-DD) for query params. */
 export function isoDate(value: Date): string {
   return value.toISOString().slice(0, 10);
