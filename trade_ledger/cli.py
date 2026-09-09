@@ -25,11 +25,15 @@ _PRICE_REFRESH_LOOKBACK = timedelta(days=30)
 def _cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    from .bots import supervisor
     from .main import create_app
 
     settings = get_settings()
     port = args.port if args.port is not None else settings.PORT
     url = f"http://{settings.HOST}:{port}"
+    # The supervisor hands this to every local bot it launches: the port the
+    # server was actually started with, not the one in `.env`.
+    supervisor.APP_URL = url
     if not args.no_browser:
         import threading
         import webbrowser

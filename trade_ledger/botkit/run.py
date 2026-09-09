@@ -8,7 +8,7 @@ never on a command line or in a process listing:
 
 | variable | meaning |
 |---|---|
-| `TRADE_LEDGER_URL` | where the app answers (default `http://127.0.0.1:8000`) |
+| `TRADE_LEDGER_URL` | where the app answers (default `http://HOST:PORT`, i.e. `http://127.0.0.1:8642`) |
 | `BOT_TOKEN` | the bot's token, shown once when the bot was created |
 | `EXCHANGE_ID` | ccxt id, e.g. `okx` — or `fake` with `--dry-run`, for a smoke test |
 | `EXCHANGE_KEY`, `EXCHANGE_SECRET`, `EXCHANGE_PASSPHRASE` | venue credentials |
@@ -197,9 +197,12 @@ def main(argv: list[str] | None = None) -> int:
         print("EXCHANGE_ID=fake is only allowed with --dry-run", file=sys.stderr)
         return 1
 
-    client = BotClient(
-        os.environ.get("TRADE_LEDGER_URL", "http://127.0.0.1:8000"), token, args.bot
-    )
+    # The app's own HOST/PORT, not a second hard-coded number: the default
+    # port lives in `settings.py` and a bot that guesses it wrong reaches
+    # nothing at all.
+    settings = get_settings()
+    url = os.environ.get("TRADE_LEDGER_URL") or f"http://{settings.HOST}:{settings.PORT}"
+    client = BotClient(url, token, args.bot)
     exchange = build_exchange()
     try:
         summary = run_once(client, exchange, dry_run=args.dry_run)

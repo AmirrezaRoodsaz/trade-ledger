@@ -99,6 +99,28 @@ def test_the_fake_market_is_flat_and_refuses_every_write():
             write("BTC/EUR")
 
 
+def test_the_default_url_is_the_apps_own_host_and_port(monkeypatch, tmp_path):
+    """The app serves on 8642 (`settings.PORT`). A bot whose env file says
+    nothing must aim at that, not at a second hard-coded number."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BOT_TOKEN", "tok")
+    monkeypatch.setenv("EXCHANGE_ID", "fake")
+    seen = {}
+
+    def fake_run_once(client, exchange, *, dry_run, **kwargs):
+        seen["base"] = client._base
+        return {"status": "dry_run"}
+
+    monkeypatch.setattr(run_module, "run_once", fake_run_once)
+    assert run_module.main(["--bot", "smoke", "--dry-run"]) == 0
+    assert seen["base"].startswith("http://127.0.0.1:8642")
+
+    # A different port for the app is a different port for its bots.
+    monkeypatch.setenv("PORT", "8799")
+    assert run_module.main(["--bot", "smoke", "--dry-run"]) == 0
+    assert seen["base"].startswith("http://127.0.0.1:8799")
+
+
 def test_the_bots_own_env_file_is_read_and_the_environment_still_wins(monkeypatch, tmp_path):
     """`bots/README.md` says: write `data/bots/<slug>/.env`, then run
     `trade-bot --bot <slug>`. So the CLI has to read that file — only the
