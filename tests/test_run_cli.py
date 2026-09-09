@@ -97,3 +97,25 @@ def test_the_fake_market_is_flat_and_refuses_every_write():
     for write in (exchange.place_order, exchange.cancel_all, exchange.close_position):
         with pytest.raises(RuntimeError, match="never trades"):
             write("BTC/EUR")
+
+
+def test_the_bots_own_env_file_is_read_and_the_environment_still_wins(monkeypatch, tmp_path):
+    """`bots/README.md` says: write `data/bots/<slug>/.env`, then run
+    `trade-bot --bot <slug>`. So the CLI has to read that file — only the
+    supervisor used to."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    env_file = tmp_path / "bots" / "smoke" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("BOT_TOKEN=from-file\nEXCHANGE_ID=okx\n")
+    monkeypatch.setenv("EXCHANGE_ID", "fake")  # an explicit override, as in the README
+    seen = {}
+
+    def fake_run_once(client, exchange, *, dry_run, **kwargs):
+        seen["auth"], seen["exchange"] = client._headers["Authorization"], exchange
+        return {"status": "dry_run"}
+
+    monkeypatch.setattr(run_module, "run_once", fake_run_once)
+
+    assert run_module.main(["--bot", "smoke", "--dry-run"]) == 0
+    assert seen["auth"] == "Bearer from-file"
+    assert isinstance(seen["exchange"], run_module.FakeExchange)

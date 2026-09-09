@@ -31,7 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from ..prices.service import Candle
-from ..settings import get_settings
+from ..settings import env_values, get_settings
 from .client import AppUnreachable, BotClient
 from .runner import ReconciliationError, run_once
 
@@ -119,7 +119,7 @@ def scaffold(name: str, root: Path | None = None) -> int:
         return 1
 
     strategy = (root or REPO_ROOT) / "bots" / "strategies" / f"{name}.py"
-    env = Path(get_settings().DATA_DIR) / "bots" / name / ".env"
+    env = bot_env_file(name)
     for target in (strategy, env):
         if target.exists():
             print(f"{target} already exists: refusing to overwrite", file=sys.stderr)
@@ -147,6 +147,25 @@ def scaffold(name: str, root: Path | None = None) -> int:
     return 0
 
 
+def bot_env_file(slug: str) -> Path:
+    """Where the bot's own environment lives — the file `trade-bot new` writes
+    and the supervisor hands to the child process."""
+    return Path(get_settings().DATA_DIR) / "bots" / slug / ".env"
+
+
+def load_bot_env(slug: str) -> None:
+    """Read `DATA_DIR/bots/<slug>/.env` into the environment, if it is there.
+
+    The supervisor already passes that file to the bots it launches; a bot
+    started by hand or by systemd got nothing, so the documented
+    "write the env file, then `trade-bot --bot <slug>`" did not actually run.
+    Existing variables win, so `EXCHANGE_ID=fake trade-bot ...` still
+    overrides the file for a smoke test.
+    """
+    for key, value in env_values(bot_env_file(slug)).items():
+        os.environ.setdefault(key, value)
+
+
 def main(argv: list[str] | None = None) -> int:
     # ponytail: a leading positional check rather than argparse subparsers —
     # `new` is the only subcommand, and `--bot x --once` must keep parsing
@@ -168,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         help="one pass and exit (the only mode; a scheduler decides when)",
     )
     args = parser.parse_args(argv)
+    load_bot_env(args.bot)
 
     token = os.environ.get("BOT_TOKEN")
     if not token:
