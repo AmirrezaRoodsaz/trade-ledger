@@ -80,6 +80,12 @@ The timer fires at `00:05, 04:05, …` UTC — five minutes after each 4-hour ba
 closes. Check it with `systemctl list-timers 'trade-bot@*'` and
 `journalctl -u trade-bot@<slug>.service -n 50`.
 
+**Keep the timer and the bot's `schedule_every_s` in step.** The app derives
+its heartbeat deadline from `schedule_every_s + grace_s`; a timer that fires
+less often than the bot's registry setting says will trip kill rule K5 (no
+heartbeat) and mark the bot `stale` — every four hours, in the shipped units,
+so `schedule_every_s` must be `14400`. Change one, change the other.
+
 `TRADE_LEDGER_URL` in the env file must point at the app over the network, and
 that endpoint must be TLS — the bot token travels on every request.
 
@@ -99,12 +105,19 @@ that endpoint must be TLS — the bot token travels on every request.
   everything alone for you to look at; `flat` cancels every resting order and
   closes every position first. Either way the app is told, and kill rule K4
   raises a critical alert.
+- **No trading after a commanded flat.** A `flat` command cancels every
+  resting order, closes every position, **closes the bot's open journal trades
+  at the flatten's own fill price**, pushes state and ends the run there. It
+  does not go on to compute signals: the positions it would trade on no longer
+  exist, and an exit order against one of them would open a naked short.
 - **No entries while paused.** A `pause` or `flat` command, or
   `paused_entries` on the bot, skips entries — exits and stops still run. A
   disabled bot finishes `skipped` without touching the venue.
 - **No position without a stop.** The stop is placed immediately after the
   entry fill, before the journal is even updated, and `stop_present` on the
-  pushed state is what kill rule K4 watches.
+  pushed state is what kill rule K4 watches. If the venue refuses the stop,
+  the position is closed again on the spot and nothing is journalled — the bot
+  would rather be flat than unprotected.
 
 ## Sizing, and what it currently assumes
 

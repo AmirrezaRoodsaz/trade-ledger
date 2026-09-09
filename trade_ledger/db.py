@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import String, create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
@@ -126,6 +127,18 @@ def _migrate(engine) -> None:
         columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(trades)")}
         if "bot_id" not in columns:
             conn.exec_driver_sql("ALTER TABLE trades ADD COLUMN bot_id INTEGER")
+        # The same guarantee `Trade.__table_args__` gives a fresh database:
+        # one journal ref per bot. A file that already holds duplicates keeps
+        # working without the index — refusing to open the database over a
+        # historical duplicate would be worse than the convention it enforces.
+        if "external_ref" in columns:
+            try:
+                conn.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_bot_ref "
+                    "ON trades (bot_id, external_ref)"
+                )
+            except OperationalError:
+                pass
 
 
 def get_session():

@@ -141,3 +141,31 @@ def test_relative_db_and_data_paths_resolve_against_the_repo_root(monkeypatch):
 
     monkeypatch.setenv("DB_PATH", "/tmp/other.db")
     assert settings.Settings().DB_PATH == "/tmp/other.db"
+
+
+def test_one_journal_ref_per_bot(session, account_factory, instrument_factory, bot_factory):
+    """The runner derives its ref from bot, symbol and bar, so a re-run of the
+    same bar must find the plan it filed rather than file a second one. The
+    index is what makes that a guarantee.
+    """
+    account, instrument = account_factory(), instrument_factory()
+    bot, _ = bot_factory()
+    fields = {
+        "account_id": account.id,
+        "instrument_id": instrument.id,
+        "direction": Direction.LONG,
+        "external_ref": "bot0000000001",
+    }
+    session.add(Trade(**fields, bot_id=bot.id))
+    session.commit()
+
+    session.add(Trade(**fields, bot_id=bot.id))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    # A hand-entered trade has no bot, and SQLite counts NULLs as distinct —
+    # the manual journal is untouched by the index.
+    session.add(Trade(**{**fields, "external_ref": "T-001"}))
+    session.add(Trade(**{**fields, "external_ref": "T-001"}))
+    session.commit()

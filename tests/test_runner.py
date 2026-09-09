@@ -40,6 +40,7 @@ class FakeExchange:
         self._balances = dict(balances or {"EUR": Decimal(2500)})
         self._positions = list(positions or [])
         self._open_orders: list[dict] = []
+        self.stop_error: Exception | None = None
 
     # reads
     def balances(self):
@@ -81,6 +82,8 @@ class FakeExchange:
 
     def place_stop(self, symbol, side, qty, stop_price, client_id):
         self.writes.append(("place_stop", symbol, side, qty, stop_price, client_id))
+        if self.stop_error is not None:
+            raise self.stop_error
         stop_id = f"{client_id[:29]}sl"
         self._open_orders.append(
             {"symbol": symbol, "clientOrderId": stop_id, "stopLossPrice": float(stop_price)}
@@ -101,8 +104,16 @@ class FakeExchange:
 
     def close_position(self, symbol):
         self.writes.append(("close_position", symbol))
+        held = self._balances.get(symbol.partition("/")[0], Decimal(0))
         self._balances[symbol.partition("/")[0]] = Decimal(0)
-        return {"kind": "order", "action": "close_position", "symbol": symbol, "status": "closed"}
+        return {
+            "kind": "order",
+            "action": "close_position",
+            "symbol": symbol,
+            "status": "closed",
+            "filled": str(held),
+            "average": "95",
+        }
 
 
 def bars(count: int, *, level=Decimal(100), last: Decimal | None = None) -> list[Candle]:
@@ -357,6 +368,167 @@ def test_a_disabled_bot_finishes_skipped_without_looking_at_the_venue(
     assert exchange.writes == []
     assert session.query(Trade).count() == 0
     assert _last_run(session, bot).status == "skipped"
+
+
+def test_a_flat_command_squares_the_journal_and_ends_the_run(
+    client, session, bot_factory, instrument_factory
+):
+    """The venue is flat afterwards, so `booked` and `live` are stale. Trading
+    on them would sell a position that no longer exists — on a swap, a naked
+    short, since the exit order is not reduce-only.
+    """
+    btc = instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    held = _seed_open_trade(session, bot, btc, Decimal(2))
+    session.add(BotCommand(bot_id=bot.id, kind="flat", reason="hands off", issued_by="ui"))
+    session.commit()
+
+    exchange = FakeExchange(
+        {"BTC/EUR": bars(20, last=Decimal(80))},  # would otherwise signal an exit
+        balances={"EUR": Decimal(2500), "BTC": Decimal(2)},
+    )
+
+    summary = run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    assert summary["status"] == "ok"
+    assert summary["flattened_by_command"] is True
+    # Cancel, close — and no second sell on top of the closed position.
+    assert [w[0] for w in exchange.writes] == ["cancel_all", "close_position"]
+
+    session.refresh(held)
+    assert held.status == "closed"
+    assert held.avg_exit == Decimal(95)  # the flatten's own fill
+    assert session.query(BotCommand).one().result == "ok"
+    assert json.loads(_state(session, bot).positions_json) == []
+
+
+def test_a_flat_command_in_a_dry_run_touches_neither_venue_nor_journal(
+    client, session, bot_factory, instrument_factory
+):
+    btc = instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    held = _seed_open_trade(session, bot, btc, Decimal(2))
+    session.add(BotCommand(bot_id=bot.id, kind="flat", issued_by="ui"))
+    session.commit()
+    exchange = FakeExchange(
+        {"BTC/EUR": bars(20)}, balances={"EUR": Decimal(2500), "BTC": Decimal(2)}
+    )
+
+    summary = run_once(_bot_client(client, token, bot.slug), exchange, dry_run=True, now=NOW)
+
+    assert summary["status"] == "dry_run"
+    assert exchange.writes == []
+    session.refresh(held)
+    assert held.status == "open"
+
+
+def test_a_refused_stop_closes_the_position_instead_of_leaving_it_naked(
+    client, session, bot_factory, instrument_factory
+):
+    instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    exchange = FakeExchange({"BTC/EUR": bars(20, last=Decimal(120))})
+    exchange.stop_error = RuntimeError("trigger price too close to market")
+
+    summary = run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    assert [w[0] for w in exchange.writes] == ["place_order", "place_stop", "close_position"]
+    assert summary["skipped"] == ["BTC/EUR: stop rejected, position closed again"]
+    # Nothing is journalled: the plan stays a plan, and the run still finishes.
+    assert session.query(Trade).one().status == "planned"
+    assert summary["status"] == "ok"
+    assert json.loads(_state(session, bot).positions_json) == []
+
+
+def test_a_failure_after_an_order_still_pushes_what_the_venue_now_holds(
+    client, session, bot_factory, instrument_factory, monkeypatch
+):
+    instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    exchange = FakeExchange({"BTC/EUR": bars(20, last=Decimal(120))})
+    bot_client = _bot_client(client, token, bot.slug)
+
+    # The venue is touched, then the run falls over on the way to the state push.
+    original = exchange.open_orders
+    calls = {"n": 0}
+
+    def explode_once():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("venue read timed out")
+        return original()
+
+    monkeypatch.setattr(exchange, "open_orders", explode_once)
+
+    with pytest.raises(RuntimeError, match="venue read timed out"):
+        run_once(bot_client, exchange, now=NOW)
+
+    run = _last_run(session, bot)
+    assert run.status == "error"
+    assert "venue read timed out" in run.error
+    # The position the run did open is on record, stop and all.
+    positions = json.loads(_state(session, bot).positions_json)
+    assert [(p["symbol"], p["stop_present"]) for p in positions] == [("BTC/EUR", True)]
+
+
+def test_the_exit_never_sells_more_than_the_venue_holds(
+    client, session, bot_factory, instrument_factory
+):
+    btc = instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    _seed_open_trade(session, bot, btc, Decimal(2))
+    # Inside the 1 % reconciliation tolerance, but an order for 2 would be
+    # rejected for insufficient balance — and the exit would never go out.
+    exchange = FakeExchange(
+        {"BTC/EUR": bars(20, last=Decimal(80))},
+        balances={"EUR": Decimal(2500), "BTC": Decimal("1.9926")},
+    )
+
+    run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    sell = next(w for w in exchange.writes if w[0] == "place_order")
+    assert sell[3] == Decimal("1.992")  # floored to the 0,001 lot step
+
+
+def test_the_stop_price_is_quantised_to_the_tick_before_it_is_planned(
+    client, session, bot_factory, instrument_factory
+):
+    instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    exchange = FakeExchange({"BTC/EUR": bars(20, last=Decimal(120))})
+
+    run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    trade = session.query(Trade).one()
+    stop = next(w for w in exchange.writes if w[0] == "place_stop")
+    # One number: what R is measured against is what actually rests on the
+    # venue. Floored, so the stop is never tighter than the strategy asked.
+    assert stop[4] == trade.planned_stop == Decimal("103.33")
+
+
+def test_a_journal_failure_after_the_order_is_logged_not_retried(
+    client, session, bot_factory, instrument_factory, monkeypatch, capsys
+):
+    """The order is out. Any failure journalling it — an unreachable app, a
+    409 from a lifecycle guard, anything — is logged and the run carries on.
+    Sending the order again is the one thing that must never happen.
+    """
+    instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])
+    exchange = FakeExchange({"BTC/EUR": bars(20, last=Decimal(120))})
+    bot_client = _bot_client(client, token, bot.slug)
+
+    def refuse(*args, **kwargs):
+        raise ValueError("the journal said no")
+
+    monkeypatch.setattr(bot_client, "open_trade", refuse)
+
+    summary = run_once(bot_client, exchange, now=NOW)
+
+    assert summary["status"] == "ok"
+    assert [w[0] for w in exchange.writes] == ["place_order", "place_stop"]  # sent once
+    assert "the journal said no" in capsys.readouterr().err
+    assert _state(session, bot).reconciliation == "ok"
 
 
 # -- sizing -------------------------------------------------------------------

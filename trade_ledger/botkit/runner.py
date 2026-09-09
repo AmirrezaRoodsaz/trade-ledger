@@ -30,8 +30,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from importlib import metadata
 
-from .client import AppUnreachable
-from .strategies import STRATEGIES
+from .strategies import DEFAULT_PARAMS, STRATEGIES
 
 # Relative tolerance for "the journal and the venue agree". Fills come back
 # rounded to the lot step, so an exact match is not a thing that happens.
@@ -74,14 +73,16 @@ def _stderr(message: str) -> None:
 
 
 def _safe(what: str, fn, *args, **kwargs):
-    """A client call made *after* an order was sent. The venue already has
-    the position; losing the journal entry is bad but re-sending is worse, so
-    the failure is logged and the run continues.
+    """A call made *after* an order was sent. The venue already has the
+    position; losing the journal entry is bad but re-sending the order is
+    worse, so **any** failure here is logged and the run carries on. A 409
+    from a lifecycle guard is as unrecoverable as an unreachable app, and
+    neither is a reason to touch the venue again.
     """
     try:
         return fn(*args, **kwargs)
-    except AppUnreachable as exc:
-        _stderr(f"app unreachable after the order was sent ({what}): {exc}")
+    except Exception as exc:  # noqa: BLE001 - deliberately everything; see the docstring
+        _stderr(f"{what} failed after the order was sent: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -95,6 +96,16 @@ def intent_ref(slug: str, symbol: str, bar_ts: datetime) -> str:
     """
     digest = hashlib.sha256(f"{slug}|{symbol}|{bar_ts.isoformat()}".encode()).hexdigest()
     return f"{re.sub(r'[^A-Za-z0-9]', '', slug)[:12]}{digest[:12]}"
+
+
+def floor_to(value: Decimal, step: Decimal | None) -> Decimal:
+    """`value` rounded **down** to a multiple of `step`.
+
+    Down in both uses: a size that rounds up is a size the venue rejects, and
+    a long stop that rounds up sits closer to the entry than the strategy
+    asked for.
+    """
+    return (value // step) * step if step else value
 
 
 def exit_ref(entry_ref: str) -> str:
@@ -202,13 +213,13 @@ def size(
 
     qty = equity * risk_pct / 100 / distance
     caps = [leverage_cap * equity / entry]
+    # A `max_position_pct` of 0 (or None) means *no cap*, not "no position" —
+    # a preset that leaves the field empty must still be tradable.
     if max_position_pct:
         caps.append(max_position_pct / 100 * equity / entry)
     qty = min([qty, *caps])
 
-    step = limits.get("step")
-    if step:
-        qty = (qty // step) * step
+    qty = floor_to(qty, limits.get("step"))
     floor = limits.get("min_qty") or Decimal(0)
     if qty <= 0 or qty < floor:
         return None, f"size {qty} below the venue minimum {floor}"
@@ -252,6 +263,21 @@ def run_once(client, exchange, *, dry_run: bool = False, now: datetime | None = 
         summary["status"] = _trade(client, exchange, config, dry_run, now, events, summary)
     except Exception as exc:
         summary["status"] = "error"
+        # The venue was touched, so the app's picture of it is out of date and
+        # a kill rule may need to see the truth. Best effort — this is already
+        # the failure path.
+        if summary.get("venue_touched") and config["preset"] is not None:
+            _safe(
+                "push state",
+                _push_state,
+                client,
+                exchange,
+                config,
+                config["preset"]["pairs"],
+                summary["reconciliation"],
+                f"run failed: {exc}",
+                events,
+            )
         _safe("push events", client.push_events, events)
         _safe(
             "finish run",
@@ -293,23 +319,40 @@ def _trade(client, exchange, config, dry_run: bool, now, events: list, summary: 
         summary["on_mismatch"] = policy
         events.append(_event("reconcile", f"mismatch: {detail}", policy=policy))
         if policy == "flat" and not dry_run:
-            summary["flattened"] = _flatten(exchange, set(booked) | set(live), events)
+            summary["flattened"] = len(
+                _flatten(exchange, sorted(set(booked) | set(live)), events, summary)
+            )
         # State goes up on either policy: the app's K4 kill rule reads
         # `BotState.reconciliation`, and a halt that pushes nothing leaves
         # the operator with no alert at all.
-        _push_state(client, exchange, config, pairs, "mismatch", detail, events)
+        # Best effort, both of them: the mismatch is what the caller has to
+        # hear about, and a venue read failing on the way out must not
+        # swallow it.
+        _safe("push state", _push_state, client, exchange, config, pairs, "mismatch", detail,
+              events)
         _safe("push events", client.push_events, events)
         events.clear()
         raise ReconciliationError(detail)
     summary["reconciliation"] = "ok"
 
     # -- commands -------------------------------------------------------------
-    entries_blocked = _apply_commands(client, exchange, config, live, dry_run, events, summary)
+    entries_blocked, flattened = _apply_commands(
+        client, exchange, config, sorted(set(booked) | set(live)), dry_run, events, summary
+    )
+    if flattened is not None:
+        # The venue is flat, so `booked`, `open_trades` and `live` are all
+        # stale — trading on them would sell a position that no longer exists
+        # (a naked short on a swap). Square the journal and stop here.
+        _close_journal(client, exchange, preset, open_trades, flattened, now, events, summary)
+        summary["flattened_by_command"] = True
+        _push_state(client, exchange, config, pairs, "ok", "flattened by command", events)
+        return finished
     if bot["paused_entries"]:
         entries_blocked = True
 
     # -- candles and signals --------------------------------------------------
-    bars = max(int(params.get(k, 0)) for k in ("entry", "exit", "atr_len")) or 55
+    merged = DEFAULT_PARAMS.get(preset["strategy"], {}) | params
+    bars = max(int(merged.get(k, 0)) for k in ("entry", "exit", "atr_len")) or 55
     candles = {
         symbol: exchange.candles(symbol, preset["timeframe"], bars + CANDLE_HEADROOM)
         for symbol in pairs
@@ -326,6 +369,8 @@ def _trade(client, exchange, config, dry_run: bool, now, events: list, summary: 
             signal,
             open_trades,
             booked,
+            live,
+            limits[signal.symbol],
             _last_close(candles[signal.symbol]),
             dry_run,
             now,
@@ -360,18 +405,46 @@ def _trade(client, exchange, config, dry_run: bool, now, events: list, summary: 
     return finished
 
 
-def _flatten(exchange, symbols, events: list) -> int:
+def _flatten(exchange, symbols, events: list, summary: dict) -> dict[str, dict]:
     """Cancel everything resting and close every position, symbol by symbol.
+    Returns the close result per symbol, which carries the fill.
 
     Cancel first: on spot a resting sell order locks the very coins the close
     would sell.
     """
+    closed = {}
     for symbol in sorted(symbols):
+        summary["venue_touched"] = True
         exchange.cancel_all(symbol)
         events.append(_event("order", f"cancelled resting orders on {symbol}"))
-        result = exchange.close_position(symbol)
-        events.append(_event("order", f"closed {symbol}", **_order_payload(result)))
-    return len(symbols)
+        closed[symbol] = exchange.close_position(symbol)
+        events.append(_event("order", f"closed {symbol}", **_order_payload(closed[symbol])))
+    return closed
+
+
+def _close_journal(client, exchange, preset, open_trades, flattened, now, events, summary) -> None:
+    """Close the bot's open journal trades after a commanded flatten.
+
+    The price is the flatten's own fill; when the venue reported none (it had
+    nothing to close) one candle stands in, because a closed trade still has
+    to carry a number the journal can grade.
+    """
+    for symbol, trade in sorted(open_trades.items()):
+        order = flattened.get(symbol) or {}
+        qty, price = _fill(order, _dec(trade.get("quantity") or 0), None)
+        if price is None:
+            price = _last_close(exchange.candles(symbol, preset["timeframe"], 1))
+        summary["exits"] += 1
+        _safe(
+            "close trade after a commanded flatten",
+            client.close_trade,
+            trade["id"],
+            ts=now,
+            quantity=qty,
+            price=price,
+            fee_eur=Decimal(0),
+        )
+        events.append(_event("info", f"journal closed after flat: {symbol}", trade_id=trade["id"]))
 
 
 def _order_payload(event: dict) -> dict:
@@ -379,13 +452,16 @@ def _order_payload(event: dict) -> dict:
     return {k: v for k, v in event.items() if k != "kind"}
 
 
-def _apply_commands(client, exchange, config, live, dry_run, events, summary) -> bool:
-    """Acknowledge every pending command; return whether entries are blocked.
+def _apply_commands(client, exchange, config, symbols, dry_run, events, summary):
+    """Acknowledge every pending command.
 
-    `flat` blocks entries for this run too — the app sets `paused_entries` on
+    Returns `(entries_blocked, flattened)` — `flattened` is the close result
+    per symbol when a `flat` command was carried out, and `None` otherwise.
+    `flat` blocks entries for this run too: the app sets `paused_entries` on
     the ack, but that only reaches the bot with the *next* config.
     """
     blocked = False
+    flattened = None
     acked = []
     for command in config["commands"]:
         kind, detail = command["kind"], ""
@@ -396,7 +472,8 @@ def _apply_commands(client, exchange, config, live, dry_run, events, summary) ->
             if dry_run:
                 detail = "dry run: nothing was sent to the venue"
             else:
-                detail = f"flattened {_flatten(exchange, set(live), events)} symbol(s)"
+                flattened = _flatten(exchange, symbols, events, summary)
+                detail = f"flattened {len(flattened)} symbol(s)"
         elif kind not in ("resume", "run_now", "reload_config", "dry_run_on", "dry_run_off"):
             client.ack_command(command["id"], "error", f"unknown command: {kind}")
             events.append(_event("command", f"unknown command: {kind}"))
@@ -405,7 +482,7 @@ def _apply_commands(client, exchange, config, live, dry_run, events, summary) ->
         acked.append(kind)
     if acked:
         summary["commands"] = acked
-    return blocked
+    return blocked, flattened
 
 
 def _last_close(candles) -> Decimal | None:
@@ -422,18 +499,29 @@ def _fill(order: dict, fallback_qty: Decimal, fallback_price: Decimal | None):
 
 
 def _exit(
-    client, exchange, signal, open_trades, booked, last_close, dry_run, now, events, summary
+    client, exchange, signal, open_trades, booked, live, limits, last_close, dry_run, now,
+    events, summary
 ) -> None:
     symbol = signal.symbol
     trade = open_trades.get(symbol)
     if trade is None:  # pragma: no cover - `held` is built from these very trades
         return
-    qty = booked[symbol]
+    # The smaller of what the journal thinks and what the venue holds, floored
+    # to the lot step: inside the reconciliation tolerance the two still
+    # differ, and an order for one tick more than the balance is rejected
+    # outright — which would leave the position open with its exit unsent.
+    held = live.get(symbol, {}).get("qty")
+    qty = floor_to(min(booked[symbol], held) if held is not None else booked[symbol],
+                   limits.get("step"))
+    if qty <= 0:
+        events.append(_event("warning", f"exit skipped, nothing sellable on {symbol}"))
+        return
     if dry_run:
         summary["exits"] += 1
         events.append(_event("info", f"would exit {qty} {symbol}: {signal.reason}"))
         return
 
+    summary["venue_touched"] = True
     exchange.cancel_all(symbol)
     order = exchange.place_order(symbol, "sell", qty, exit_ref(trade["external_ref"]))
     summary["exits"] += 1
@@ -471,9 +559,13 @@ def _enter(
     summary,
 ) -> None:
     symbol = signal.symbol
+    # Quantised once, here, so the size, the journalled plan and the resting
+    # order all measure R against the same stop. Down, so the stop never ends
+    # up tighter than the strategy asked for.
+    stop_price = floor_to(signal.stop, limits.get("tick"))
     qty, why = size(
         signal.entry,
-        signal.stop,
+        stop_price,
         equity=equity,
         risk_pct=_dec(preset["risk_pct"] or 0),
         max_position_pct=_dec(preset["max_position_pct"]) if preset["max_position_pct"] else None,
@@ -501,8 +593,8 @@ def _enter(
             # entry here; add it with the strategy that needs it.
             direction="long",
             entry=signal.entry,
-            stop=signal.stop,
-            risk_eur=qty * abs(signal.entry - signal.stop),
+            stop=stop_price,
+            risk_eur=qty * abs(signal.entry - stop_price),
             qty=qty,
             reason=f"{signal.reason} [{equity_source}, {why}]",
             external_ref=ref,
@@ -513,6 +605,7 @@ def _enter(
         events.append(_event("info", f"would enter {qty} {symbol}", trade_id=trade["id"], ref=ref))
         return
 
+    summary["venue_touched"] = True
     order = exchange.place_order(symbol, "buy", qty, trade["external_ref"])
     summary["orders"] += 1
     events.append(_event("order", f"entry {symbol}", **_order_payload(order)))
@@ -520,8 +613,21 @@ def _enter(
 
     # The stop goes on before the journal entry: the position is live from
     # the moment the order returns, and an unprotected position is the one
-    # thing this bot may never leave behind.
-    stop = exchange.place_stop(symbol, "sell", filled, signal.stop, trade["external_ref"])
+    # thing this bot may never leave behind. If the stop cannot be placed,
+    # the position is closed again rather than left naked, and nothing is
+    # journalled — the plan stays `planned`, the events say what happened.
+    # ponytail: that plan keeps its ref, so a re-run inside the same bar
+    # would try the entry again. Cancel it through `/api/trades/{id}/cancel`
+    # once the client speaks that route; until then the 4-hour bar is the
+    # only thing between this and a retry loop.
+    try:
+        stop = exchange.place_stop(symbol, "sell", filled, stop_price, trade["external_ref"])
+    except Exception as exc:  # noqa: BLE001 - any refusal leaves the position naked
+        events.append(_event("error", f"stop rejected on {symbol}: {exc}", trade_id=trade["id"]))
+        summary["skipped"].append(f"{symbol}: stop rejected, position closed again")
+        closed = exchange.close_position(symbol)
+        events.append(_event("order", f"closed unprotected {symbol}", **_order_payload(closed)))
+        return
     events.append(_event("order", f"stop {symbol}", **_order_payload(stop)))
 
     _safe(

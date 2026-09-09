@@ -106,6 +106,12 @@ class PlaybookVersion(Base):
 
 class Trade(Base):
     __tablename__ = "trades"
+    # A bot derives its journal ref from its own slug, the symbol and the
+    # signal's bar, so a re-run of that bar must find the plan it already
+    # filed rather than file a second one. The index makes that a guarantee
+    # rather than a convention. SQLite treats NULLs as distinct, so a
+    # hand-entered trade (bot_id NULL) is untouched by it.
+    __table_args__ = (UniqueConstraint("bot_id", "external_ref", name="uq_trades_bot_ref"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)

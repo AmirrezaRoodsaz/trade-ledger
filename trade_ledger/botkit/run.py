@@ -76,14 +76,13 @@ class FakeExchange:
     place_order = place_stop = cancel_all = close_position = _refuse
 
 
-def build_exchange(dry_run: bool):
-    """The real wrapper, or the fake one. Imported here rather than at module
-    level so `EXCHANGE_ID=fake` needs no ccxt credentials at all.
+def build_exchange():
+    """The real wrapper, or the fake one. `botkit.exchange` is imported here
+    rather than at module level so `EXCHANGE_ID=fake` needs no ccxt
+    credentials — and no ccxt — at all.
     """
     ccxt_id = os.environ.get("EXCHANGE_ID", "okx")
     if ccxt_id == "fake":
-        if not dry_run:
-            raise SystemExit("EXCHANGE_ID=fake is only allowed with --dry-run")
         return FakeExchange()
 
     from .exchange import Exchange
@@ -114,11 +113,14 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         print("BOT_TOKEN is not set: refusing to run", file=sys.stderr)
         return 1
+    if os.environ.get("EXCHANGE_ID") == "fake" and not args.dry_run:
+        print("EXCHANGE_ID=fake is only allowed with --dry-run", file=sys.stderr)
+        return 1
 
     client = BotClient(
         os.environ.get("TRADE_LEDGER_URL", "http://127.0.0.1:8000"), token, args.bot
     )
-    exchange = build_exchange(args.dry_run)
+    exchange = build_exchange()
     try:
         summary = run_once(client, exchange, dry_run=args.dry_run)
     except (AppUnreachable, ReconciliationError) as exc:
