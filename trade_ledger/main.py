@@ -40,6 +40,11 @@ async def _background(app: FastAPI):
     try:
         yield
     finally:
+        # ponytail: the loops are cancelled, running bots are not. A bot is a
+        # separate process in its own session and may be mid-order; killing it
+        # on a restart of the app is how a position ends up without a stop.
+        # It finishes, writes its log, and the next supervisor start reaps
+        # nothing — the run row it opened is the monitor's problem (K4).
         supervisor.unregister_hook()
         for task in tasks:
             task.cancel()

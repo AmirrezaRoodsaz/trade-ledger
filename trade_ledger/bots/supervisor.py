@@ -86,6 +86,11 @@ def _event(session: Session, bot: Bot, kind: EventKind, message: str, now: datet
     session.add(BotEvent(bot_id=bot.id, ts=now, kind=kind, message=message))
 
 
+def _live(bot_id: int) -> bool:
+    started = _LAUNCHES.get(bot_id)
+    return started is not None and started.popen.poll() is None
+
+
 def _over_cap(bot_id: int, now: datetime) -> bool:
     day, count = _FAILURES.get(bot_id, (None, 0))
     return day == now.date() and count >= RESTART_CAP
@@ -157,6 +162,22 @@ def launch(
     `BOT_TOKEN`, is in that file or the bot does not get it.
     """
     now = now or datetime.now(UTC)
+    if _live(bot.id):
+        # Overwriting the entry would orphan the child: never reaped, log
+        # handle open, its failure never counted against the cap.
+        _event(
+            session,
+            bot,
+            EventKind.INFO,
+            f"launch skipped: pid {_LAUNCHES[bot.id].pid} is still running",
+            now,
+        )
+        session.commit()
+        return None
+    if bot.id in _LAUNCHES:
+        # Exited between two ticks. Collect it first, so its event, alert and
+        # failure count land before this launch decides whether it may run.
+        reap(session, now)
     if _over_cap(bot.id, now):
         raise_alert(
             session,
@@ -194,9 +215,27 @@ def launch(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handle = log_path.open("ab")
     try:
-        child = popen(argv, cwd=str(REPO_ROOT), env=env, stdout=handle, stderr=subprocess.STDOUT)
-    except Exception:
+        # Its own process group: a Ctrl-C in the terminal running the app goes
+        # to the app, not to a bot that may be halfway through an order.
+        child = popen(
+            argv,
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as exc:
         handle.close()
+        raise_alert(
+            session,
+            bot,
+            AlertSeverity.WARNING,
+            "bot_launch_failed",
+            f"could not start {bot.slug}: {type(exc).__name__}: {exc}",
+            now=now,
+        )
+        session.commit()
         raise
 
     started = Launch(
@@ -273,6 +312,15 @@ def _fail_command(session: Session, bot: Bot, detail: str) -> None:
         commands.ack(session, command, "failed", detail)
 
 
+def _skip_detail(bot: Bot, now: datetime) -> str:
+    """Why `launch` returned `None`, in the words the operator sees."""
+    if _live(bot.id):
+        return "already running"
+    if _over_cap(bot.id, now):
+        return "restart cap"
+    return "no env file"
+
+
 def launch_hook(bot: Bot) -> None:
     """`commands.LAUNCH_HOOKS` entry: a `run_now` on a local bot starts now.
 
@@ -287,7 +335,7 @@ def launch_hook(bot: Bot) -> None:
     try:
         if launch(session, bot, now=now) is not None:
             return
-        detail = "restart cap" if _over_cap(bot.id, now) else "no env file"
+        detail = _skip_detail(bot, now)
     except Exception as exc:
         log.exception("run_now launch failed for %s", bot.slug)
         detail = f"{type(exc).__name__}: {exc}"
@@ -317,7 +365,11 @@ async def loop(
         try:
             with db.SessionLocal() as session:
                 for bot, slot in plan(session):
-                    launch(session, bot, slot=slot)
+                    try:
+                        launch(session, bot, slot=slot)
+                    except Exception:  # one bot that will not start is not the fleet
+                        log.exception("launch failed for %s", bot.slug)
+                        session.rollback()
                 reap(session)
         except asyncio.CancelledError:
             raise

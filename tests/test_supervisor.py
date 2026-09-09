@@ -34,8 +34,8 @@ class FakePopen:
         self.code = code
         self.calls: list[dict] = []
 
-    def __call__(self, argv, *, cwd=None, env=None, stdout=None, stderr=None):
-        self.calls.append({"argv": argv, "cwd": cwd, "env": env})
+    def __call__(self, argv, **kwargs):
+        self.calls.append({"argv": argv, **kwargs})
         return FakeProc(self.code)
 
 
@@ -131,6 +131,8 @@ def test_launch_argv_cwd_and_event(session, bot_factory):
         "--once",
     ]
     assert popen.calls[0]["cwd"] == str(supervisor.REPO_ROOT)
+    # Its own process group, so a Ctrl-C to the app does not kill a bot mid-order.
+    assert popen.calls[0]["start_new_session"] is True
     assert started.log_path.parent == supervisor.bot_dir(bot.slug) / "runs"
     assert started.log_path.exists()
     events = _events(session, bot)
@@ -336,3 +338,52 @@ def test_lifespan_starts_the_supervisor_and_registers_the_hook(monkeypatch):
 
     assert seen == ["started", "cancelled"]
     assert commands.LAUNCH_HOOKS == []
+
+
+# --- one child at a time ----------------------------------------------------
+
+
+def test_launch_refuses_while_the_previous_child_is_alive(session, bot_factory):
+    bot = _due_bot(bot_factory)
+    popen = FakePopen(code=None)
+    first = supervisor.launch(session, bot, now=NOW, popen=popen)
+
+    assert supervisor.launch(session, bot, now=NOW, popen=popen) is None
+    assert len(popen.calls) == 1
+    assert supervisor._LAUNCHES[bot.id] is first  # not overwritten, not orphaned
+    assert "still running" in _events(session, bot)[-1].message
+
+
+def test_run_now_while_running_is_acked_failed(session, bot_factory, monkeypatch):
+    bot = _due_bot(bot_factory)
+    supervisor.launch(session, bot, now=NOW, popen=FakePopen(code=None))
+    session.commit()
+
+    monkeypatch.setattr(commands, "LAUNCH_HOOKS", [supervisor.launch_hook])
+    command = commands.issue(session, bot, CommandKind.RUN_NOW)
+
+    assert (command.result, command.result_detail) == ("failed", "already running")
+
+
+def test_launch_reaps_a_child_that_exited_between_ticks(session, bot_factory):
+    bot = _due_bot(bot_factory)
+    supervisor.launch(session, bot, now=NOW, popen=FakePopen(code=1))
+
+    # No reap ran in between: the next launch must collect the corpse first,
+    # so the failure is alerted and counted rather than silently dropped.
+    assert supervisor.launch(session, bot, now=NOW, popen=FakePopen(code=None)) is not None
+    assert [one.kind for one in _alerts(session, "bot_exit")] == ["bot_exit"]
+    assert supervisor._FAILURES[bot.id] == (NOW.date(), 1)
+
+
+def test_a_spawn_that_fails_alerts_and_does_not_record_a_launch(session, bot_factory):
+    bot = _due_bot(bot_factory)
+
+    def boom(argv, **kwargs):
+        raise OSError("Exec format error")
+
+    with pytest.raises(OSError, match="Exec format error"):
+        supervisor.launch(session, bot, now=NOW, popen=boom)
+
+    assert bot.id not in supervisor._LAUNCHES
+    assert [one.kind for one in _alerts(session)] == ["bot_launch_failed"]
