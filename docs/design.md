@@ -27,6 +27,8 @@ trade_ledger/
   engine/          pure computation: analytics, mae_mfe, portfolio, returns
   tax/             regime -> fifo -> year_summary -> anlage/forms -> exports
   reports/weekly.py  the one-page PDF
+  bots/            bot registry, health, kill rules, control (see Bot Center)
+  botkit/          what runs inside a bot process; the app never imports it
   api/             routers, auto-discovered; every module with a `router` is mounted
   main.py, cli.py  app factory and command line
 ```
@@ -265,6 +267,198 @@ prüfen") and `form_status` ("Formstand: VZ 2025, geprüft 2026-09-06"),
 including as
 headers on the CSV downloads. See `docs/tax-notes.md` for the underlying facts.
 
+## Bot Center
+
+A bot is a **separate process**. The app is its registry, its configuration
+source, its command queue, its health monitor, its alert channel and — through
+the journal — its trade record. It is not its runtime, and it is never its
+exchange connection.
+
+```
+trade_ledger/
+  bots/            the app side. Nothing here imports botkit.
+    auth.py        bearer tokens: token_urlsafe(32), stored as sha256 hex
+    schedule.py    next_run() and the heartbeat deadline(), all UTC
+    kill_rules.py  K1–K5 as pure functions over rows handed in
+    status.py      derive_status(), and which trades count as a bot's own
+    monitor.py     health() (pure read) + evaluate() (alerts, commands) + loop()
+    alerts.py      raise_alert() with the 6-hour per-(bot, kind) cooldown
+    commands.py    issue()/ack(): the queue's guards and flag semantics
+    presets.py     immutable versions, assignment, the live-mode reason
+    capital.py     which stage capital a bot is measured against
+    supervisor.py  launches local bots as subprocesses; plan/launch/reap/loop
+    telegram.py    outbound alerts and daily summary, inbound commands
+    backtests.py   pass/fail for an uploaded result
+    readiness.py   results per stage and the 0–100 % score
+  botkit/          the bot side. Imported by the bot process alone.
+    client.py      BotClient: the push protocol and the journal calls
+    exchange.py    the only module in the repo with an exchange write call
+    runner.py      one pass of the loop, in the fixed order
+    strategies/    registry name -> signals(candles, params, open_positions)
+    run.py         the `trade-bot` CLI
+```
+
+### Tables
+
+| Table | Holds |
+|---|---|
+| `bots` | one registered bot: `slug`, `account_id`, `strategy`, `preset_version_id`, `host`, `schedule_every_s`, `schedule_at`, `grace_s`, `enabled`, `dry_run`, `paused_entries`, `token_hash`, `stage_capital_eur`, `code_version`, `last_heartbeat`, `last_run_id`, `status` |
+| `presets`, `preset_versions` | a named parameter set and its immutable versions: `params_json`, `timeframe`, `pairs_json`, `risk_pct`, `max_position_pct`, `leverage_cap`, `note` |
+| `bot_runs` | one execution: `status` (`running`/`ok`/`error`/`dry_run`/`skipped`), `summary_json`, `log_path`, `error` |
+| `bot_state` | the latest snapshot per bot, upserted: `equity_eur`, `peak_equity_eur`, `positions_json`, `open_orders_json`, `reconciliation`, `config_version` |
+| `bot_events` | the timeline: `heartbeat`, `info`, `warning`, `error`, `kill_rule`, `command`, `config_applied`, `reconcile`, `order` |
+| `bot_commands` | the queue: `kind`, `reason`, `issued_by`, `acked_ts`, `result`, `result_detail` |
+| `bot_drills` | the five manual readiness checks per bot |
+| `alerts` | `severity`, `kind`, `message`, `sent_telegram`, `acknowledged` |
+| `backtest_results` | an uploaded or pushed result and its verdict |
+| `trades.bot_id` | nullable FK — what makes a trade "this bot's" for K2, K3 and the stage columns |
+
+A bot belongs to exactly one `Account`, so venue and mode are the account's;
+paper, demo and live never mix in a bot's statistics.
+
+### Push protocol
+
+Every bot endpoint lives under `/api/bots/{slug}/…` and takes
+`Authorization: Bearer <token>`. `bots/auth.py` resolves the token to a bot;
+the wrong token is a 401, another bot's account a 403. **A request without the
+header is the local UI and behaves exactly as it did before** — the app has no
+user auth and gains none here.
+
+| Endpoint | Effect |
+|---|---|
+| `POST heartbeat` | `last_heartbeat`, `code_version`, `next_run`; status recomputed |
+| `POST runs` → `PATCH runs/{id}` | opens and closes a `BotRun`; the log text is written to `DATA_DIR/bots/<slug>/runs/<id>.log` |
+| `POST state` | upserts `bot_state`, then re-evaluates the kill rules and raises what fires |
+| `POST events` | appends to the timeline |
+| `GET config` | `{preset, flags, commands: [pending…], stage_capital}` — everything the run needs, in one call |
+| `POST commands/{id}/ack` | acknowledges, emits an event and applies the flag the command implies |
+
+The journal is not a bot API: a bot posts to the same `/api/trades` routes the
+UI uses. A bot token there pins `account_id` to the bot's account and stamps
+`bot_id`, so a bot cannot file a trade against somebody else's account.
+
+### Health
+
+`monitor.health()` is a pure read — status, the five kill-rule results, the
+next run, the heartbeat deadline, the last run and the last state — so a `GET`
+can call it. `monitor.evaluate()` is that plus its consequences: alerts,
+system commands, and the cached `bot.status` that the fleet list reads.
+`loop()` runs `evaluate_all` every 60 s, which is what notices a bot that has
+gone silent — a silent bot pushes nothing to notice.
+
+Status is first-match-wins in this order:
+
+`disabled` (switched off) → `stale` (deadline passed) → `error` (last run
+errored, or reconciliation mismatch) → `paused` (`paused_entries`) →
+`running` (a run is open) → `ok`.
+
+`stale` deliberately outranks `error`: a bot that stopped reporting probably
+also has a failed last run, and "we have not heard from it" is the more useful
+thing to say. A `disabled` bot raises no alerts at all.
+
+The five rules and who acts on each are tabulated in [`bots.md`](bots.md).
+They are pure functions: rows in, a `{rule, status, value, threshold, action,
+detail}` dict out, with `value` and `threshold` as strings so a `Decimal` never
+becomes a float on the way to the UI.
+
+### Presets and commands
+
+A `PresetVersion` is immutable — there is no PUT for one, and a parameter
+change is a new version. Assigning a version records a `config_applied` event
+and queues `reload_config`; on a **live**-mode bot the operator must type a
+reason first. The bot sees the new config at its next `GET config` and reports
+`config_version` back in its state, which is how the UI can say "pending"
+rather than "applied".
+
+`commands.issue()` is the single place that knows the guards — a resume with
+no reason, an unconfirmed flat, a second pending command of the same kind are
+all rejected there rather than in each caller (UI route, Telegram, monitor).
+`commands.ack()` is the other half: one implementation of what an acked
+command does to the bot's flags, called by the push route and by tests alike.
+`flat` sets `paused_entries` too — a bot that just closed everything must not
+re-enter on the next bar.
+
+### Supervisor
+
+For `host == local` bots the app owns *when*, and nothing else.
+`supervisor.plan()` works out which bots are due from `schedule_every_s` and
+the `schedule_at` anchor, `launch()` starts
+`python -m trade_ledger.botkit.run --bot <slug>` with the bot's env file, and
+`reap()` notices the process exiting. Failures are capped at three per UTC day
+per bot, so a broken bot does not become a restart storm.
+
+Runs are not created here — the bot posts its own `BotRun` when it starts. The
+supervisor's bookkeeping (which pid, since when, log where) is **in memory**,
+so an app restart forgets the launches it was watching; a launch that never
+turned into a run is exactly the failure that alerts, and the next monitor pass
+catches the rest as K4. The supervisor never imports the botkit: the bot is a
+subprocess, not a library call, which is what keeps the exchange wrapper out of
+the app process. A `remote` bot is scheduled by a systemd timer instead and
+reaches the app over the network.
+
+### Botkit
+
+`runner.run_once()` is one pass, in a fixed order:
+
+```
+get config -> heartbeat -> start run -> reconcile -> apply commands ->
+candles -> signals -> exits -> sizing + feasibility -> plan trade ->
+order -> resting stop -> open/close trade -> push state -> finish run
+```
+
+Two interlocks decide the rest of it. **The app authorises the order**: the
+intent is journalled first and the trade's `external_ref` becomes the exchange
+`clientOrderId`, so an unreachable app raises `AppUnreachable` before anything
+reaches the venue. **An order is sent once**: after a write reaches the
+exchange, a failing app call is logged and the run carries on to push state —
+never a reason to re-send. A re-run of the same bar computes the same
+`external_ref`, finds the trade it already planned and reuses it.
+
+Reconciliation compares the journal's open trades for the bot with what the
+venue actually holds. On a mismatch the run stops with `error`: `halt` (the
+default) leaves everything alone, `flat` cancels every resting order and closes
+every position first. Either way the app is told and K4 fires.
+
+Sizing is `risk / stop distance`, capped by `max_position_pct` and
+`leverage_cap` and floored to the venue's lot step; below the minimum order
+size an entry is skipped with a warning rather than shrunk. The equity behind
+that risk is the venue's EUR balance when every pair settles in EUR, and the
+bot's `stage_capital_eur` otherwise — the bot has no FX rate, that lives in the
+app. `extra.sizing_base_source` on the pushed state says which was used.
+
+`exchange.py` is the only module allowed to write: `create_order`,
+`cancel_order`, `cancel_all_orders`, `set_leverage`, each returning an `order`
+event dict so a run's venue traffic can be pushed to the app verbatim.
+`tests/test_exchange_isolation.py` imports `trade_ledger.main` and asserts the
+module is not in `sys.modules` — the boundary is a test, not a convention.
+
+### Backtests and readiness
+
+The app does not backtest. A result is uploaded as JSON (or pushed with the
+bot token) and judged by `backtests.evaluate` against criteria that live in
+`Setting` rows — by default ≥ 40 trades, expectancy > 0, profit factor ≥ 1,3,
+max drawdown ≤ 30 % and CAGR ÷ max DD at least the benchmark's.
+
+`readiness.py` then tells one story in three columns with the same metrics —
+the latest **passed backtest**, **incubation** (the bot's closed demo/paper
+trades) and **real money** (its closed live trades) — and rolls them into one
+0–100 % score over four weighted stages: backtest 25 %, five manual drills
+15 %, incubation 30 % (closed demo trades ÷ 30), live 30 % (closed live trades
+÷ 50). Each stage's progress is multiplied by a **gate factor**: 1 when the
+stage gate passes or has too few trades to judge, 0,5 when it fails — so a
+failing gate visibly caps the score instead of quietly letting it climb.
+Weights and targets are `Setting` rows too.
+
+### Telegram
+
+Outbound alerts, a daily 07:00 summary, and inbound `/status`, `/pause`,
+`/resume`, `/flat`, `/runnow`. Everything degrades to a no-op unless both
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, inbound messages from any
+other chat id are dropped, and nothing in the module raises out of a network
+call — a broken Telegram connection must not take the monitor down with it.
+Inbound commands go through `commands.issue()` like every other caller, so
+`/flat` needs its `CONFIRM` and `/resume` its reason.
+
 ## Frontend
 
 Vite + React 18 + TypeScript + Tailwind, built to `frontend/dist` and served by
@@ -273,6 +467,10 @@ money stays a string until `fmt.ts` formats it. Charts are `lightweight-charts`
 for price and `recharts` for everything else. `npm run check` runs a small
 repo-specific helper check; `npm run build` type-checks with `tsc --noEmit`
 first.
+
+The Bots area is three pages: `/bots` (the fleet, one card per bot with its
+status light, kill-rule chips and readiness ring), `/bots/:slug` (Overview,
+Strategy, Runs, Timeline, Config, Controls, Alerts) and `/bots/presets`.
 
 ## Testing
 

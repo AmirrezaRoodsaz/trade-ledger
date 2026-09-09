@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-10
+
+The Bot Center: the app now registers, configures, watches and controls trading
+bots. It still never holds a trade-capable key and never places an order.
+
+### Added
+
+**Registry and push protocol**
+
+- `Bot`, `Preset`/`PresetVersion`, `BotRun`, `BotState`, `BotEvent`,
+  `BotCommand`, `BotDrill`, `Alert` and `BacktestResult` tables, plus
+  `Trade.bot_id` so a bot's own trades are identifiable.
+- Bearer-token auth for bots: `secrets.token_urlsafe(32)`, shown once on create
+  and on rotate, stored as sha256. A token authorises its own bot and its own
+  account — wrong token 401, foreign account 403. Requests without the header
+  keep the previous local-UI behaviour.
+- `POST /api/bots/{slug}/heartbeat`, `runs`, `runs/{id}`, `state`, `events`,
+  `commands/{id}/ack` and `GET config`. Bots journal through the existing
+  `/api/trades` routes, which stamp `bot_id` and pin the account.
+
+**Health and control**
+
+- Kill rules K1–K5 as pure functions — capital brake, rolling edge over the last
+  20 closed trades, 8-loss streak, integrity (reconciliation, stops, missed
+  runs) and heartbeat — with the status ladder `disabled`, `stale`, `error`,
+  `paused`, `running`, `ok`.
+- A monitor loop every 60 s: alerts with a six-hour per-(bot, kind) cooldown, a
+  `pause` queued on K1 and a `flat` on a stop-less position.
+- Command queue with acknowledgement: pause, resume (typed reason), emergency
+  flat (typed confirmation), run now, dry-run on/off, reload config.
+- Versioned, immutable presets; assigning one to a live bot needs a reason and
+  queues `reload_config`.
+- Telegram: alerts, a daily 07:00 summary, and inbound `/status`, `/pause`,
+  `/resume`, `/flat`, `/runnow` from one chat id, behind
+  `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+
+**Running bots**
+
+- A supervisor loop that launches due `local` bots as subprocesses, captures
+  their output to `data/bots/<slug>/runs/`, and caps failures at three per day.
+- `bots/systemd/trade-bot@.service` and `.timer` for a `remote` bot on a VPS.
+- `trade_ledger/botkit/`: `BotClient`, the `Exchange` wrapper (the only module
+  in the repo with an exchange write call), the runner loop, a Donchian 55/20
+  strategy, and the `trade-bot` CLI including `trade-bot new <name>`.
+- `bots/BOT_CONTRACT.md`, `bots/README.md` and `bots/template/` — enough to hand
+  to someone (or something) writing a new bot.
+
+**Results and UI**
+
+- Uploaded backtest results judged against configurable criteria, results per
+  stage (backtest, incubation, real money) and a 0–100 % readiness score with a
+  gate factor that caps a failing stage.
+- Bots pages: fleet (`/bots`), detail with Overview, Strategy, Runs, Timeline,
+  Config, Controls and Alerts (`/bots/:slug`), presets (`/bots/presets`), a Bots
+  card on the dashboard and a Telegram section in Settings.
+- `docs/bots.md`, a Bot Center section in `README.md` and in `docs/design.md`.
+
+### Fixed
+
+- `trade-bot` now reads the bot's own `data/bots/<slug>/.env`, as
+  `bots/README.md` always said it did. Only the supervisor passed that file
+  through before, so a bot started by hand or by systemd refused to run.
+
+[0.2.0]: https://github.com/AmirrezaRoodsaz/trade-ledger/releases/tag/v0.2.0
+
 ## [0.1.0] — 2026-09-06
 
 First release. Everything below is new.
