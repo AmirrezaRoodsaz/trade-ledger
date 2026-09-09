@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import ROUTERS
-from .bots import monitor
+from .bots import alerts, monitor, telegram
 from .db import init_db
 from .settings import get_settings
 
@@ -26,16 +26,34 @@ _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _BUILD_HINT = "frontend not built: cd frontend && npm ci && npm run build"
 
 
+def _telegram_configured() -> bool:
+    settings = get_settings()
+    return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
+
+
+# Registered once, when this module is first imported, rather than inside
+# `create_app` — `create_app` runs once per test too, and `NOTIFIERS` is a
+# module-level list shared across every app instance in the process.
+if _telegram_configured():
+    alerts.NOTIFIERS.append(telegram.notify)
+
+
 @contextlib.asynccontextmanager
 async def _background(app: FastAPI):
-    """Start the monitor loop with the app and cancel it on shutdown."""
-    task = asyncio.create_task(monitor.loop())
+    """Start the monitor loop with the app, plus the Telegram poller when
+    Telegram is configured, and cancel both on shutdown.
+    """
+    tasks = [asyncio.create_task(monitor.loop())]
+    if _telegram_configured():
+        tasks.append(asyncio.create_task(telegram.loop()))
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app(db_path: str | None = None, *, background: bool = False) -> FastAPI:
