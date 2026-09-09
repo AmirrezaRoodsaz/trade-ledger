@@ -15,6 +15,7 @@ from pydantic import Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..bots.auth import bot_auth
 from ..db import get_session
 from ..engine.mae_mfe import compute_excursions
 from ..enums import Direction, Mistake, TradeStatus
@@ -28,7 +29,7 @@ from ..journal import (
     review_trade,
     suggest_fills,
 )
-from ..models import Instrument, Trade
+from ..models import Bot, Instrument, Trade
 from ..prices.service import candles as fetch_candles
 from ..prices.service import ensure_prices
 from ..settings import get_settings
@@ -89,6 +90,7 @@ class TradeOut(BaseModel):
     screenshots: list[str]
     tags: list[str]
     external_ref: str | None
+    bot_id: int | None
 
     @field_validator("screenshots", "tags", mode="before")
     @classmethod
@@ -167,10 +169,15 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _get_trade_or_404(session: Session, trade_id: int) -> Trade:
+def _get_trade_or_404(session: Session, trade_id: int, bot: Bot | None = None) -> Trade:
+    """The trade, and — when a bot token made the call — proof it is that
+    bot's own trade. One guard here rather than one per endpoint.
+    """
     trade = session.get(Trade, trade_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
+    if bot is not None and trade.bot_id != bot.id:
+        raise HTTPException(status_code=403, detail="trade belongs to another bot")
     return trade
 
 
@@ -189,10 +196,16 @@ def list_trades(
     tag: str | None = None,
     date_from: UTCDatetime | None = None,
     date_to: UTCDatetime | None = None,
+    bot_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
 ):
+    if bot is not None:
+        # A bot sees its own trades and nothing else. Its account has exactly
+        # one mode, so the mode filter could only ever hide them.
+        bot_id, mode = bot.id, "all"
     stmt = trade_filters(
         select(Trade),
         mode=mode,
@@ -205,6 +218,8 @@ def list_trades(
     )
     if status is not None:
         stmt = stmt.where(Trade.status == status)
+    if bot_id is not None:
+        stmt = stmt.where(Trade.bot_id == bot_id)
 
     total = session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (
@@ -241,11 +256,20 @@ def trades_calendar(
 
 
 @router.post("/trades", response_model=TradeOut, status_code=201)
-def create_trade(payload: TradeIn, session: Session = Depends(get_session)):
+def create_trade(
+    payload: TradeIn,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
     get_account_or_404(session, payload.account_id)
     if session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
-    return _guard(plan_trade, session, payload.model_dump())
+    data = payload.model_dump()
+    if bot is not None:
+        if payload.account_id != bot.account_id:
+            raise HTTPException(status_code=403, detail="account does not belong to this bot")
+        data["bot_id"] = bot.id
+    return _guard(plan_trade, session, data)
 
 
 def _excursion_window(trade: Trade) -> tuple[date, date]:
@@ -282,8 +306,13 @@ def get_trade(trade_id: int, session: Session = Depends(get_session)):
 
 
 @router.put("/trades/{trade_id}", response_model=TradeOut)
-def update_trade(trade_id: int, payload: TradeIn, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def update_trade(
+    trade_id: int,
+    payload: TradeIn,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     if trade.status != TradeStatus.PLANNED:
         # Account, instrument and direction decide what the linked fills mean;
         # once a trade is open they are history. Grading goes through /review.
@@ -305,8 +334,12 @@ def update_trade(trade_id: int, payload: TradeIn, session: Session = Depends(get
 
 
 @router.delete("/trades/{trade_id}", status_code=204)
-def delete_trade(trade_id: int, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def delete_trade(
+    trade_id: int,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     if trade.status not in (TradeStatus.PLANNED, TradeStatus.CANCELLED):
         raise HTTPException(
             status_code=409, detail="only planned or cancelled trades can be deleted"
@@ -316,26 +349,45 @@ def delete_trade(trade_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/trades/{trade_id}/open", response_model=TradeOut)
-def post_open_trade(trade_id: int, payload: FillsIn, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def post_open_trade(
+    trade_id: int,
+    payload: FillsIn,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     return _guard(open_trade, session, trade, **_fill_args(payload))
 
 
 @router.post("/trades/{trade_id}/close", response_model=TradeOut)
-def post_close_trade(trade_id: int, payload: FillsIn, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def post_close_trade(
+    trade_id: int,
+    payload: FillsIn,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     return _guard(close_trade, session, trade, **_fill_args(payload))
 
 
 @router.post("/trades/{trade_id}/review", response_model=TradeOut)
-def post_review_trade(trade_id: int, payload: ReviewIn, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def post_review_trade(
+    trade_id: int,
+    payload: ReviewIn,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     return _guard(review_trade, session, trade, **payload.model_dump())
 
 
 @router.post("/trades/{trade_id}/cancel", response_model=TradeOut)
-def post_cancel_trade(trade_id: int, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def post_cancel_trade(
+    trade_id: int,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     return _guard(cancel_trade, session, trade)
 
 
