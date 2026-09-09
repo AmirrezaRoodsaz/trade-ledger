@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { fleetReadiness, listAlerts, listBots, type Alert, type BotListItem } from "../api/bots";
 import { get, soft, useApi } from "../api/client";
 import type { Account, Page, Stats, SyncRun, Trade, ValueSeries, YearSummary } from "../api/types";
 import { Card } from "../components/Card";
@@ -10,6 +11,7 @@ import { MoneyCell } from "../components/MoneyCell";
 import { DASH, date, dateTime, eur, isoDate, num, pct, r, toNumber } from "../fmt";
 
 const VALUE_WINDOW_DAYS = 30;
+const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface DashboardData {
   accounts: Account[];
@@ -19,13 +21,16 @@ interface DashboardData {
   openTrades: number;
   tax: YearSummary | null;
   value: ValueSeries | null;
+  bots: BotListItem[] | null;
+  readiness: Record<string, string> | null;
+  alerts: Alert[] | null;
 }
 
 async function load(year: number): Promise<DashboardData> {
   const accounts = await get<Account[]>("/accounts");
   const to = new Date();
   const from = new Date(to.getTime() - VALUE_WINDOW_DAYS * 86_400_000);
-  const [lastSync, paper, live, openPage, tax, value] = await Promise.all([
+  const [lastSync, paper, live, openPage, tax, value, bots, readiness, alerts] = await Promise.all([
     Promise.all(
       accounts.map((account) =>
         get<SyncRun[]>(`/accounts/${account.id}/sync-runs`).then(
@@ -44,8 +49,22 @@ async function load(year: number): Promise<DashboardData> {
         `/portfolio/value-series?mode=live&from=${isoDate(from)}&to=${isoDate(to)}`,
       ),
     ),
+    soft(listBots()),
+    soft(fleetReadiness()),
+    soft(listAlerts("?unacked=true")),
   ]);
-  return { accounts, lastSync, paper, live, openTrades: openPage.total, tax, value };
+  return {
+    accounts,
+    lastSync,
+    paper,
+    live,
+    openTrades: openPage.total,
+    tax,
+    value,
+    bots,
+    readiness,
+    alerts,
+  };
 }
 
 function Stat({ label, value }: { label: string; value: ReactNode }) {
@@ -107,6 +126,49 @@ function Meter({ label, value, limit }: { label: string; value: string | null; l
   );
 }
 
+/** Fleet at a glance: what the bots are doing, what is shouting, how ready they are. */
+function BotsCard({
+  bots,
+  readiness,
+  alerts,
+}: {
+  bots: BotListItem[];
+  readiness: Record<string, string>;
+  alerts: Alert[];
+}) {
+  const since = Date.now() - ALERT_WINDOW_MS;
+  const recent = alerts.filter((alert) => new Date(alert.ts).getTime() >= since).length;
+  const counts = new Map<string, number>();
+  for (const bot of bots) counts.set(bot.status, (counts.get(bot.status) ?? 0) + 1);
+  const percents = bots.map((bot) => toNumber(readiness[bot.slug])).filter((one) => one !== null);
+  const average =
+    percents.length === 0 ? null : percents.reduce((sum, one) => sum + one, 0) / percents.length;
+
+  return (
+    <Card
+      title="Bots"
+      right={
+        <Link className="text-accent hover:underline" to="/bots">
+          Fleet
+        </Link>
+      }
+    >
+      <p className="text-2xl">{num(bots.length, 0)}</p>
+      <p className="text-muted">
+        {counts.size === 0
+          ? "no bots yet"
+          : [...counts].map(([status, count]) => `${num(count, 0)} ${status}`).join(" · ")}
+      </p>
+      <p className="mt-2">
+        <span className={recent > 0 ? "text-neg" : "text-muted"}>
+          {num(recent, 0)} unacked alerts (24 h)
+        </span>
+        <span className="text-muted"> · readiness Ø {average === null ? DASH : `${num(average, 1)} %`}</span>
+      </p>
+    </Card>
+  );
+}
+
 export function Dashboard() {
   const year = new Date().getFullYear();
   const state = useApi(() => load(year), [year]);
@@ -114,7 +176,8 @@ export function Dashboard() {
   if (state.error !== null) return <p className="text-neg">{state.error}</p>;
   if (state.data === null) return <p className="text-muted">{state.loading ? "Loading…" : DASH}</p>;
 
-  const { accounts, lastSync, paper, live, openTrades, tax, value } = state.data;
+  const { accounts, lastSync, paper, live, openTrades, tax, value, bots, readiness, alerts } =
+    state.data;
   const lastPoint = value?.points.at(-1) ?? null;
   const p20Used =
     tax === null ? null : String((toNumber(tax.p20.dividends) ?? 0) + (toNumber(tax.p20.interest) ?? 0));
@@ -128,7 +191,7 @@ export function Dashboard() {
         <StatsCard title="Live" mode="live" stats={live} />
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card title="Open trades">
           <p className="text-2xl">{num(openTrades, 0)}</p>
           <p className="text-muted">across all modes</p>
@@ -144,6 +207,8 @@ export function Dashboard() {
               : `as of ${date(lastPoint.date)}`}
           </p>
         </Card>
+
+        <BotsCard bots={bots ?? []} readiness={readiness ?? {}} alerts={alerts ?? []} />
 
         <Card title={`Steuer ${year}`}>
           {tax === null ? (

@@ -1,14 +1,22 @@
+import { Fragment } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { get, useApi } from "../api/client";
 import type { Account } from "../api/types";
 import { ModeBadge } from "./ModeBadge";
 
-const LINKS = [
+interface NavItem {
+  to: string;
+  label: string;
+  sub?: { to: string; label: string }[];
+}
+
+const LINKS: NavItem[] = [
   { to: "/journal", label: "Journal" },
   { to: "/analytics", label: "Analytics" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/steuer", label: "Steuer" },
   { to: "/reports", label: "Reports" },
+  { to: "/bots", label: "Bots", sub: [{ to: "/bots/presets", label: "Presets" }] },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -53,9 +61,20 @@ export function Nav() {
 
       <div className="flex flex-col gap-0.5">
         {LINKS.map((link) => (
-          <NavLink key={link.to} to={link.to} className={itemClass}>
-            {link.label}
-          </NavLink>
+          <Fragment key={link.to}>
+            <NavLink to={link.to} className={itemClass}>
+              {link.label}
+            </NavLink>
+            {link.sub?.map((child) => (
+              <NavLink
+                key={child.to}
+                to={child.to}
+                className={(state) => `${itemClass(state)} pl-6 text-[11px]`}
+              >
+                {child.label}
+              </NavLink>
+            ))}
+          </Fragment>
         ))}
       </div>
     </nav>
