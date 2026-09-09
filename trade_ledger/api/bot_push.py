@@ -240,6 +240,26 @@ def finish_run(
     return Ok()
 
 
+def _unknown_pairs(session: Session, bot: Bot, positions: list[dict]) -> list[str]:
+    """Position symbols the bot's preset does not list, in order, deduped.
+
+    Empty when the bot has no preset (or the preset has no pairs): there is
+    nothing to be unknown against.
+    """
+    version = (
+        None if bot.preset_version_id is None else session.get(PresetVersion, bot.preset_version_id)
+    )
+    pairs = set(json.loads(version.pairs_json)) if version is not None else set()
+    if not pairs:
+        return []
+    seen: dict[str, None] = {}
+    for position in positions:
+        symbol = position.get("symbol")
+        if isinstance(symbol, str) and symbol not in pairs:
+            seen.setdefault(symbol, None)
+    return list(seen)
+
+
 @router.post("/bots/{slug}/state", response_model=StateOut)
 def push_state(
     payload: StateIn,
@@ -273,6 +293,18 @@ def push_state(
     state.reconciliation_detail = payload.reconciliation_detail
     state.config_version = payload.config_version
     state.extra_json = json.dumps(payload.extra)
+
+    for symbol in _unknown_pairs(session, bot, payload.positions):
+        # Spec section 9: accepted, but said out loud. A position on a pair the
+        # preset does not list is either a hand trade in the bot's account or a
+        # preset that was changed under a live position — both worth a look.
+        _event(
+            session,
+            bot,
+            EventKind.WARNING,
+            message=f"unknown pair {symbol}: not in the assigned preset",
+            payload={"symbol": symbol},
+        )
 
     if payload.reconciliation == "mismatch":
         _event(

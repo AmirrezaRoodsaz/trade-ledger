@@ -11,7 +11,15 @@ from trade_ledger import db
 from trade_ledger.api.bots import slugify
 from trade_ledger.bots import auth
 from trade_ledger.bots.schedule import deadline, next_run
-from trade_ledger.models import BotRun, Setting
+from trade_ledger.models import (
+    Alert,
+    BotCommand,
+    BotDrill,
+    BotEvent,
+    BotRun,
+    BotState,
+    Setting,
+)
 
 
 def _create_account(client, name="okx-bot-account"):
@@ -141,6 +149,27 @@ def test_delete_bot_without_history_succeeds(client):
     _create_bot(client)
     assert client.delete("/api/bots/okx-donchian-4h").status_code == 204
     assert client.get("/api/bots/okx-donchian-4h").status_code == 404
+
+
+def test_delete_bot_takes_its_child_rows_with_it(client, session):
+    """Events, state, commands, drills and alerts are the bot's own working
+    state — left behind they are rows pointing at a bot that is gone."""
+    bot = _create_bot(client)["bot"]
+    session.add_all(
+        [
+            BotEvent(bot_id=bot["id"], ts=datetime.now(UTC), kind="info", message="hi"),
+            BotState(bot_id=bot["id"], ts=datetime.now(UTC), reconciliation="ok"),
+            BotCommand(bot_id=bot["id"], kind="pause", issued_by="ui"),
+            BotDrill(bot_id=bot["id"], key="k", done=True),
+            Alert(bot_id=bot["id"], ts=datetime.now(UTC), severity="warning", kind="k", message=""),
+        ]
+    )
+    session.commit()
+
+    assert client.delete("/api/bots/okx-donchian-4h").status_code == 204
+
+    for model in (BotEvent, BotState, BotCommand, BotDrill, Alert):
+        assert [one for one in session.query(model).all() if one.bot_id == bot["id"]] == []
 
 
 def test_delete_bot_with_runs_conflicts(client, session):

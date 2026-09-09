@@ -100,7 +100,7 @@ def test_round_trip_heartbeat_run_state_events(client, session, bot_factory, mon
                     "avg_entry": "60000",
                     "stop_present": True,
                     "stop_price": "57000",
-                    "unrealised_eur": "12.5",
+                    "unrealised_quote": "12.5",
                 }
             ],
             "open_orders": [],
@@ -256,6 +256,46 @@ def _preset_version(session, **overrides) -> PresetVersion:
     session.add(version)
     session.flush()
     return version
+
+
+def test_a_position_on_a_pair_the_preset_does_not_list_warns(client, session, bot_factory):
+    """Spec section 9: accepted, but said out loud. Either somebody traded the
+    bot's account by hand or the preset moved under a live position."""
+    version = _preset_version(session)  # pairs: BTC/USDT:USDT
+    bot, token = bot_factory(preset_version_id=version.id)
+    session.commit()
+
+    resp = client.post(
+        f"/api/bots/{bot.slug}/state",
+        json={
+            "positions": [
+                {"symbol": "BTC/USDT:USDT", "qty": "0.01", "stop_present": True},
+                {"symbol": "DOGE/USDT:USDT", "qty": "100", "stop_present": True},
+                {"symbol": "DOGE/USDT:USDT", "qty": "50", "stop_present": True},
+            ],
+            "reconciliation": "ok",
+        },
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    warnings = _events(session, bot, EventKind.WARNING)
+    # One event, not one per position: it is one unknown pair.
+    assert [one.message for one in warnings] == [
+        "unknown pair DOGE/USDT:USDT: not in the assigned preset"
+    ]
+
+
+def test_a_bot_without_a_preset_has_no_unknown_pairs(client, session, bot_factory):
+    bot, token = bot_factory()
+    session.commit()
+    resp = client.post(
+        f"/api/bots/{bot.slug}/state",
+        json={"positions": [{"symbol": "ETH/EUR", "qty": "1"}], "reconciliation": "ok"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _events(session, bot, EventKind.WARNING) == []
 
 
 def test_config_shape_with_preset_and_pending_commands(

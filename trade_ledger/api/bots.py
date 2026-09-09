@@ -21,7 +21,7 @@ from ..bots import monitor
 from ..bots.auth import issue_token
 from ..db import get_session
 from ..enums import BotHost, BotStatus, EventKind
-from ..models import Bot, BotEvent, BotRun, Trade
+from ..models import Alert, Bot, BotCommand, BotDrill, BotEvent, BotRun, BotState, Trade
 from ..settings import _parse_env_file, get_settings
 from ._common import get_account_or_404, get_bot_or_404
 from .schemas import BaseModel, Money
@@ -251,6 +251,13 @@ def delete_bot(slug: str, session: Session = Depends(get_session)):
     ):
         if session.scalar(select(func.count()).select_from(model).where(column == bot.id)):
             raise HTTPException(status_code=409, detail=f"bot has {what}")
+    # Everything that is only ever about this bot goes with it. Runs and trades
+    # are the history that makes a delete refuse; these five are the bot's own
+    # working state, and leaving them behind orphans rows against a foreign key
+    # that no longer resolves.
+    for model in (BotEvent, BotState, BotCommand, BotDrill, Alert):
+        for row in session.execute(select(model).where(model.bot_id == bot.id)).scalars():
+            session.delete(row)
     session.delete(bot)
     session.commit()
 
