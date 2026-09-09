@@ -98,3 +98,55 @@ class TaxRegime(StrEnum):
     P20_TERMIN = "p20_termin"  # Termingeschaefte: CFD, perps, futures
     P22 = "p22"  # Section 22 Nr. 3 sonstige Leistungen (staking, lending, airdrop with service)
     NONE = "none"
+
+
+class BotHost(StrEnum):
+    LOCAL = "local"
+    REMOTE = "remote"
+
+
+class BotStatus(StrEnum):
+    """Listed in priority order: the first one that applies wins."""
+
+    DISABLED = "disabled"
+    STALE = "stale"
+    ERROR = "error"
+    PAUSED = "paused"
+    RUNNING = "running"
+    OK = "ok"
+
+
+class RunStatus(StrEnum):
+    RUNNING = "running"
+    OK = "ok"
+    ERROR = "error"
+    DRY_RUN = "dry_run"
+    SKIPPED = "skipped"
+
+
+class EventKind(StrEnum):
+    HEARTBEAT = "heartbeat"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    KILL_RULE = "kill_rule"
+    COMMAND = "command"
+    CONFIG_APPLIED = "config_applied"
+    RECONCILE = "reconcile"
+    ORDER = "order"
+
+
+class CommandKind(StrEnum):
+    PAUSE = "pause"
+    RESUME = "resume"
+    FLAT = "flat"
+    RUN_NOW = "run_now"
+    DRY_RUN_ON = "dry_run_on"
+    DRY_RUN_OFF = "dry_run_off"
+    RELOAD_CONFIG = "reload_config"
+
+
+class AlertSeverity(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"

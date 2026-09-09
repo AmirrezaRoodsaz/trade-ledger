@@ -13,7 +13,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from ..enums import Mode
-from ..models import Account, Instrument, PlaybookVersion, Trade
+from ..models import Account, Bot, Instrument, PlaybookVersion, Trade
 
 ModeFilter = Literal["live", "paper", "demo", "all"]
 
@@ -23,6 +23,13 @@ def get_account_or_404(session: Session, account_id: int) -> Account:
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
     return account
+
+
+def get_bot_or_404(session: Session, slug: str) -> Bot:
+    bot = session.execute(select(Bot).where(Bot.slug == slug)).scalar_one_or_none()
+    if bot is None:
+        raise HTTPException(status_code=404, detail="bot not found")
+    return bot
 
 
 def get_instrument_or_404(session: Session, instrument_id: int) -> Instrument:

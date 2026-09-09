@@ -18,6 +18,8 @@ from sqlalchemy.types import TypeDecorator
 
 from .settings import get_settings
 
+SCHEMA_VERSION = "2"
+
 
 class Base(DeclarativeBase):
     pass
@@ -99,11 +101,31 @@ def init_db(path: str | Path | None = None) -> None:
     from .models import Setting
 
     Base.metadata.create_all(engine)
+    _migrate(engine)
 
     with SessionLocal() as session:
-        if session.get(Setting, "schema_version") is None:
-            session.add(Setting(key="schema_version", value="1"))
-            session.commit()
+        version = session.get(Setting, "schema_version")
+        if version is None:
+            session.add(Setting(key="schema_version", value=SCHEMA_VERSION))
+        else:
+            version.value = SCHEMA_VERSION
+        session.commit()
+
+
+def _migrate(engine) -> None:
+    """Add columns an older DB file predates.
+
+    `create_all` creates missing *tables* but never missing *columns*, so a
+    database written before a column existed keeps working until something
+    selects it. ponytail: a hand-rolled PRAGMA check instead of Alembic —
+    one added column so far, and SQLite's `ALTER TABLE ADD COLUMN` is the
+    whole migration. Bring in a migration tool the first time a change needs
+    data rewritten or a column dropped.
+    """
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(trades)")}
+        if "bot_id" not in columns:
+            conn.exec_driver_sql("ALTER TABLE trades ADD COLUMN bot_id INTEGER")
 
 
 def get_session():

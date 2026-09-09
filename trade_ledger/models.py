@@ -142,6 +142,7 @@ class Trade(Base):
     screenshots: Mapped[str] = mapped_column(String, default="[]")
     tags: Mapped[str] = mapped_column(String, default="[]")
     external_ref: Mapped[str | None] = mapped_column(String, default=None)
+    bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), default=None)
 
     @property
     def r_multiple(self) -> Decimal | None:
@@ -224,3 +225,132 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class Bot(Base):
+    """One registered bot process. `token_hash` is the sha256 hex of the
+    bearer token — the token itself is shown once, on create and on rotate,
+    and never stored.
+    """
+
+    __tablename__ = "bots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    strategy: Mapped[str] = mapped_column(String, nullable=False)
+    preset_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("preset_versions.id"), default=None
+    )
+    host: Mapped[str] = mapped_column(String, default="local")
+    schedule_every_s: Mapped[int] = mapped_column(Integer, default=14400)
+    schedule_at: Mapped[str] = mapped_column(String, default="00:05")
+    grace_s: Mapped[int] = mapped_column(Integer, default=3300)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    paused_entries: Mapped[bool] = mapped_column(Boolean, default=False)
+    stage_capital_eur: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False)
+    code_version: Mapped[str | None] = mapped_column(String, default=None)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    last_run_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    status: Mapped[str] = mapped_column(String, default="ok")
+    created: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class Preset(Base):
+    __tablename__ = "presets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    strategy: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(String, default=None)
+
+
+class PresetVersion(Base):
+    """Immutable once created — an edit is a new version."""
+
+    __tablename__ = "preset_versions"
+    __table_args__ = (UniqueConstraint("preset_id", "version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preset_id: Mapped[int] = mapped_column(ForeignKey("presets.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    params_json: Mapped[str] = mapped_column(String, default="{}")
+    timeframe: Mapped[str] = mapped_column(String, default="4h")
+    pairs_json: Mapped[str] = mapped_column(String, default="[]")
+    risk_pct: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    max_position_pct: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    leverage_cap: Mapped[Decimal] = mapped_column(Money, default=Decimal(1))
+    note: Mapped[str | None] = mapped_column(String, default=None)
+    created: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+
+
+class BotRun(Base):
+    __tablename__ = "bot_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), nullable=False)
+    started: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    finished: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    status: Mapped[str] = mapped_column(String, default="running")
+    summary_json: Mapped[str] = mapped_column(String, default="{}")
+    log_path: Mapped[str | None] = mapped_column(String, default=None)
+    error: Mapped[str | None] = mapped_column(String, default=None)
+
+
+class BotState(Base):
+    """Latest snapshot per bot — one row, upserted."""
+
+    __tablename__ = "bot_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), unique=True, nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    equity_eur: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    peak_equity_eur: Mapped[Decimal | None] = mapped_column(Money, default=None)
+    positions_json: Mapped[str] = mapped_column(String, default="[]")
+    open_orders_json: Mapped[str] = mapped_column(String, default="[]")
+    reconciliation: Mapped[str] = mapped_column(String, default="unknown")
+    reconciliation_detail: Mapped[str | None] = mapped_column(String, default=None)
+    config_version: Mapped[int | None] = mapped_column(Integer, default=None)
+    extra_json: Mapped[str] = mapped_column(String, default="{}")
+
+
+class BotEvent(Base):
+    __tablename__ = "bot_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), nullable=False)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(String, default="")
+    payload_json: Mapped[str] = mapped_column(String, default="{}")
+
+
+class BotCommand(Base):
+    __tablename__ = "bot_commands"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, default=None)
+    issued_ts: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    issued_by: Mapped[str] = mapped_column(String, default="ui")
+    acked_ts: Mapped[datetime | None] = mapped_column(UTCDateTime, default=None)
+    result: Mapped[str | None] = mapped_column(String, default=None)
+    result_detail: Mapped[str | None] = mapped_column(String, default=None)
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), default=None)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(String, default="")
+    sent_telegram: Mapped[bool] = mapped_column(Boolean, default=False)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
