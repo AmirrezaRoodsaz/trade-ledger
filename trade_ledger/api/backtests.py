@@ -27,7 +27,8 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 
 class BacktestIn(BaseModel):
-    strategy: str
+    # Optional only for a bot push, where the bot's own strategy is stamped.
+    strategy: str | None = None
     preset_version_id: int | None = None
     label: str = ""
     period_start: date_
@@ -89,7 +90,23 @@ def to_out(row: BacktestResult) -> BacktestOut:
 
 
 def _store(session: Session, payload: BacktestIn, bot: Bot | None) -> BacktestResult:
+    """A bot files results for its own strategy and nothing else — otherwise
+    one bot could raise another bot's readiness through the strategy-wide
+    fallback in `bots.readiness`.
+    """
     values = payload.model_dump()
+    if bot is None:
+        if not values["strategy"]:
+            raise HTTPException(status_code=422, detail="strategy is required")
+    else:
+        if values["strategy"] and values["strategy"] != bot.strategy:
+            raise HTTPException(
+                status_code=422,
+                detail=f"bot {bot.slug} may only file results for {bot.strategy}",
+            )
+        values["strategy"] = bot.strategy
+        if values["preset_version_id"] is None:
+            values["preset_version_id"] = bot.preset_version_id
     pairs = values.pop("pairs")
     equity = values.pop("equity_r")
     passed, reasons = evaluate(values, criteria(session))
@@ -137,6 +154,8 @@ async def upload_backtest(
     session: Session = Depends(get_session),
     bot: Bot | None = Depends(bot_auth),
 ):
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="file larger than 5 MB")
     data = await file.read()
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file larger than 5 MB")

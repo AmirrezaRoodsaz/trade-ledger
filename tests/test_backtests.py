@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 
 from trade_ledger.bots.backtests import criteria, evaluate
-from trade_ledger.models import Setting
+from trade_ledger.models import Preset, PresetVersion, Setting
 
 
 def _result(**over) -> dict:
@@ -157,6 +157,58 @@ def test_bot_push_stamps_the_bot_id(client, bot_factory):
 
     assert resp.status_code == 201, resp.text
     assert resp.json()["bot_id"] == bot.id
+
+
+def test_a_bot_may_not_file_for_another_strategy(client, bot_factory):
+    """The strategy-wide fallback in `bots.readiness` means a foreign result
+    would raise another bot's readiness — so it is refused, not re-stamped.
+    """
+    _bot, token = bot_factory()
+
+    resp = client.post(
+        "/api/backtests",
+        json=_payload(strategy="breakout"),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert client.get("/api/backtests").json() == []
+
+
+def test_a_bot_push_without_a_strategy_takes_the_bots_own(client, session, bot_factory):
+    bot, token = bot_factory(strategy="donchian", preset_version_id=None)
+    payload = _payload()
+    del payload["strategy"]
+
+    body = client.post(
+        "/api/backtests", json=payload, headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    assert body["strategy"] == "donchian"
+    assert body["bot_id"] == bot.id
+
+
+def test_a_bot_push_inherits_the_bots_preset(client, session, bot_factory):
+    preset = Preset(name="donchian 20/10", strategy="donchian")
+    session.add(preset)
+    session.flush()
+    version = PresetVersion(preset_id=preset.id, version=1)
+    session.add(version)
+    session.commit()
+    _bot, token = bot_factory(preset_version_id=version.id)
+
+    body = client.post(
+        "/api/backtests", json=_payload(), headers={"Authorization": f"Bearer {token}"}
+    ).json()
+
+    assert body["preset_version_id"] == version.id
+
+
+def test_a_ui_post_still_needs_a_strategy(client):
+    payload = _payload()
+    del payload["strategy"]
+
+    assert client.post("/api/backtests", json=payload).status_code == 422
 
 
 def test_a_stale_bot_token_is_rejected(client):

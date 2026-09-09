@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..engine import analytics
-from ..models import Account, Instrument, Playbook, PlaybookVersion, Setting, Trade
+from ..models import Account, Instrument, Playbook, PlaybookVersion, Trade
 from ._common import trade_filters
 from .schemas import BaseModel, Money, UTCDatetime
 
@@ -156,13 +156,6 @@ def _enrich_for_breakdown(session: Session, trades: list[Trade], by: str) -> Non
             labels = {pv_id: f"{name} v{version}" for pv_id, version, name in rows}
         for t in trades:
             t.playbook_label = labels.get(t.playbook_version_id, "none")
-
-
-def _capital_setting(session: Session, mode: str) -> Decimal:
-    key = f"stage_capital_{mode}"
-    default = "2500" if mode == "paper" else "250"
-    row = session.get(Setting, key)
-    return Decimal(row.value) if row is not None else Decimal(default)
 
 
 @router.get("/stats", response_model=StatsOut)
@@ -317,7 +310,7 @@ def get_stage_gate(
         date_to=date_to,
     )
     if capital is None:
-        capital = _capital_setting(session, mode)
+        capital = analytics.stage_capital(session, mode)
     result = analytics.stage_gate(trades, mode, capital)
     result["checks"] = [
         {**c, "actual": str(c["actual"]), "required": str(c["required"])} for c in result["checks"]

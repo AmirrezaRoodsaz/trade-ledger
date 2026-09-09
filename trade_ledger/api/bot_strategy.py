@@ -94,6 +94,7 @@ def fleet_readiness(session: Session = Depends(get_session)):
 def get_bot_strategy(slug: str, session: Session = Depends(get_session)):
     bot = get_bot_or_404(session, slug)
     results = readiness_engine.stage_results(session, bot)
+    drills = readiness_engine.drills(session, bot)
     backtest = to_out(results["backtest"]) if results["backtest"] is not None else None
     return StrategyOut(
         results=ResultsOut(
@@ -101,9 +102,9 @@ def get_bot_strategy(slug: str, session: Session = Depends(get_session)):
             incubation=_stage_out(results["incubation"]),
             live=_stage_out(results["live"]),
         ),
-        readiness=readiness_engine.readiness(session, bot, results),
+        readiness=readiness_engine.readiness(session, bot, results, drills),
         backtest=backtest,
-        drills=readiness_engine.drills(session, bot),
+        drills=drills,
     )
 
 

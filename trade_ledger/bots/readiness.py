@@ -31,7 +31,6 @@ _TARGET_DEFAULTS = {
     "readiness_demo_trades": Decimal(30),
     "readiness_live_trades": Decimal(50),
 }
-_CAPITAL_DEFAULTS = {"paper": Decimal(2500), "live": Decimal(250)}
 _HALF = Decimal("0.5")
 _ONE = Decimal(1)
 
@@ -42,9 +41,8 @@ def _setting(session: Session, key: str, default: Decimal) -> Decimal:
 
 
 def _capital(session: Session, bot: Bot, gate_mode: str) -> Decimal:
-    if bot.stage_capital_eur:
-        return bot.stage_capital_eur
-    return _setting(session, f"stage_capital_{gate_mode}", _CAPITAL_DEFAULTS[gate_mode])
+    """The bot's own stage capital, else the ladder's for that stage."""
+    return bot.stage_capital_eur or analytics.stage_capital(session, gate_mode)
 
 
 def _bot_trades(session: Session, bot: Bot, modes: tuple[str, ...]) -> list[Trade]:
@@ -145,7 +143,7 @@ def _gate_factor(result: dict, gate_mode: str) -> Decimal:
     """
     # ponytail: the gate's own minimum decides what "too few to judge" means,
     # so readiness never has a second opinion about it.
-    if result["gate"]["passed"] or result["count"] < analytics._MIN_TRADES[gate_mode]:
+    if result["gate"]["passed"] or result["count"] < analytics.MIN_TRADES[gate_mode]:
         return _ONE
     return _HALF
 
@@ -156,17 +154,21 @@ def _progress(count: int, target: Decimal) -> Decimal:
     return min(_ONE, Decimal(count) / target)
 
 
-def readiness(session: Session, bot: Bot, results: dict | None = None) -> dict:
+def readiness(
+    session: Session, bot: Bot, results: dict | None = None, drill_rows: list[dict] | None = None
+) -> dict:
     """`{percent, stages: [...]}` — percent is the weighted sum of
-    `progress × factor`, rounded to one decimal.
+    `progress × factor`, rounded to one decimal. `results` and `drill_rows`
+    are passed in by a caller that already fetched them.
     """
     results = results if results is not None else stage_results(session, bot)
+    drill_rows = drill_rows if drill_rows is not None else drills(session, bot)
     weights = {key: _setting(session, key, default) for key, default in _WEIGHT_DEFAULTS.items()}
     targets = {key: _setting(session, key, default) for key, default in _TARGET_DEFAULTS.items()}
     demo_target, live_target = targets["readiness_demo_trades"], targets["readiness_live_trades"]
 
     backtest = results["backtest"]
-    done_drills = sum(1 for drill in drills(session, bot) if drill["done"])
+    done_drills = sum(1 for drill in drill_rows if drill["done"])
     incubation, live = results["incubation"], results["live"]
 
     stages = [
