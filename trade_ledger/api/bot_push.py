@@ -23,9 +23,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..bots import commands
 from ..bots.auth import bot_auth
 from ..db import get_session
-from ..enums import CommandKind, EventKind, Mode, RunStatus
+from ..enums import EventKind, Mode, RunStatus
 from ..models import Bot, BotCommand, BotEvent, BotRun, BotState, Preset, PresetVersion, Setting
 from ..settings import get_settings
 from ._common import get_account_or_404
@@ -41,16 +42,6 @@ STAGE_CAPITAL_DEFAULTS = {
     Mode.PAPER: Decimal(2500),
     Mode.DEMO: Decimal(2500),
     Mode.LIVE: Decimal(250),
-}
-
-# Which bot flag an acknowledged command flips. `flat` pauses entries too:
-# a bot that just closed everything must not re-enter on the next bar.
-ACK_FLAGS = {
-    CommandKind.FLAT: ("paused_entries", True),
-    CommandKind.PAUSE: ("paused_entries", True),
-    CommandKind.RESUME: ("paused_entries", False),
-    CommandKind.DRY_RUN_ON: ("dry_run", True),
-    CommandKind.DRY_RUN_OFF: ("dry_run", False),
 }
 
 
@@ -394,25 +385,13 @@ def ack_command(
     bot: Bot = Depends(bot_for_slug),
     session: Session = Depends(get_session),
 ):
-    """The bot confirms it carried a command out. Only a result of `ok`
-    flips a flag — a failed pause must stay pending in the operator's view.
+    """The bot confirms it carried a command out. `commands.ack` holds the
+    flag semantics — a failed pause must stay pending in the operator's
+    view, and the UI's own command route shares this implementation.
     """
     command = session.get(BotCommand, command_id)
     if command is None or command.bot_id != bot.id:
         raise HTTPException(status_code=404, detail="command not found")
 
-    command.acked_ts = _now()
-    command.result = payload.result
-    command.result_detail = payload.detail
-    if payload.result == "ok" and command.kind in ACK_FLAGS:
-        field, value = ACK_FLAGS[command.kind]
-        setattr(bot, field, value)
-    _event(
-        session,
-        bot,
-        EventKind.COMMAND,
-        message=f"{command.kind} acked: {payload.result}",
-        payload={"command_id": command.id, "kind": command.kind, "result": payload.result},
-    )
-    session.commit()
+    commands.ack(session, command, payload.result, payload.detail)
     return Ok()
