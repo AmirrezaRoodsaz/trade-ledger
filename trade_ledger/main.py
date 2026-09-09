@@ -31,20 +31,22 @@ def _telegram_configured() -> bool:
     return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
 
 
-# Registered once, when this module is first imported, rather than inside
-# `create_app` — `create_app` runs once per test too, and `NOTIFIERS` is a
-# module-level list shared across every app instance in the process.
-if _telegram_configured():
-    alerts.NOTIFIERS.append(telegram.notify)
-
-
 @contextlib.asynccontextmanager
 async def _background(app: FastAPI):
     """Start the monitor loop with the app, plus the Telegram poller when
     Telegram is configured, and cancel both on shutdown.
+
+    The `notify` registration lives here too, not at module import — this
+    only runs when an app actually goes live with `background=True`, so a
+    plain `pytest` run with real Telegram keys sitting in `.env` never wires
+    up a notifier that would send real alerts. `NOTIFIERS` is a module-level
+    list shared by every app instance in the process, so the append is
+    idempotent — a second `background=True` app must not double-send.
     """
     tasks = [asyncio.create_task(monitor.loop())]
     if _telegram_configured():
+        if telegram.notify not in alerts.NOTIFIERS:
+            alerts.NOTIFIERS.append(telegram.notify)
         tasks.append(asyncio.create_task(telegram.loop()))
     try:
         yield

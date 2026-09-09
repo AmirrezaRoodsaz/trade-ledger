@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -39,7 +40,7 @@ def test_send_posts_to_the_right_url_with_the_right_body():
 
     assert ok is True
     assert seen["url"] == f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    assert seen["body"] == {"chat_id": CHAT_ID, "text": "hello", "parse_mode": "HTML"}
+    assert seen["body"] == {"chat_id": CHAT_ID, "text": "hello"}
 
 
 def test_send_returns_false_when_unconfigured(monkeypatch):
@@ -52,6 +53,34 @@ def test_send_returns_false_on_a_failed_request():
         return httpx.Response(500)
 
     assert telegram.send("hello", client=_client(handler)) is False
+
+
+def test_send_never_logs_the_token_on_a_failed_request(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    with caplog.at_level(logging.WARNING):
+        assert telegram.send("hello", client=_client(handler)) is False
+
+    assert TOKEN not in caplog.text
+
+
+def test_send_sends_plain_text_no_parse_mode_even_with_markup_looking_text():
+    """A `<b>` in a bot name or message must reach Telegram as literal text,
+    not be interpreted as HTML — Telegram rejects unbalanced/unescaped
+    markup outright, so `parse_mode` must not be set at all.
+    """
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    ok = telegram.send("<b>bold</b> & stuff", client=_client(handler))
+
+    assert ok is True
+    assert seen["body"] == {"chat_id": CHAT_ID, "text": "<b>bold</b> & stuff"}
+    assert "parse_mode" not in seen["body"]
 
 
 # --- format_alert --------------------------------------------------------------
@@ -155,6 +184,32 @@ def test_poll_once_flat_without_confirm_replies_with_error_and_issues_nothing(se
     assert "confirm" in replies[0].lower()
 
 
+def test_poll_once_flat_with_confirm_queues_the_command_and_replies(session, bot_factory):
+    bot, _ = bot_factory()
+    replies = []
+    updates = [_message(1, CHAT_ID, f"/flat {bot.slug} CONFIRM")]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            return _updates_response(updates)
+        replies.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True})
+
+    telegram.poll_once(session, _client(handler), 0)
+
+    flats = (
+        session.execute(
+            select(BotCommand).where(BotCommand.bot_id == bot.id, BotCommand.kind == CommandKind.FLAT)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(flats) == 1
+    assert flats[0].issued_by == "telegram"
+    assert len(replies) == 1
+    assert "confirm" not in replies[0].lower()
+
+
 def test_poll_once_status_replies_with_the_daily_summary(session, bot_factory):
     bot, _ = bot_factory()
     replies = []
@@ -230,3 +285,34 @@ def test_telegram_test_endpoint_reports_not_configured_without_keys(client, monk
 
     assert response.status_code == 200
     assert response.json() == {"ok": False, "detail": "not configured"}
+
+
+def _patch_client_transport(monkeypatch, handler) -> None:
+    """`send()` builds its own `httpx.Client()` when called with no client —
+    the route calls it that way, so the test patches the class itself to
+    hand back one wired to a `MockTransport`.
+    """
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *a, **kw: real_client(transport=httpx.MockTransport(handler)))
+
+
+def test_telegram_test_endpoint_success(client, monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    _patch_client_transport(monkeypatch, handler)
+
+    response = client.post("/api/settings/telegram/test")
+
+    assert response.json() == {"ok": True, "detail": "sent"}
+
+
+def test_telegram_test_endpoint_send_failure(client, monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    _patch_client_transport(monkeypatch, handler)
+
+    response = client.post("/api/settings/telegram/test")
+
+    assert response.json() == {"ok": False, "detail": "send failed"}

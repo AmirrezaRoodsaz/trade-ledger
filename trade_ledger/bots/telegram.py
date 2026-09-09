@@ -37,9 +37,15 @@ _KIND_BY_WORD = {
 
 
 def send(text: str, client: httpx.Client | None = None) -> bool:
-    """POST `sendMessage`. `False` when unconfigured or the call fails —
+    """POST `sendMessage`, plain text — nothing here emits markup, and a
+    stray `<`/`&` in a bot name or message would otherwise make Telegram
+    reject the whole send. `False` when unconfigured or the call fails —
     never raises, so a caller mid-transaction (a notifier, `poll_once`'s
     reply) never has to guard it.
+
+    Never logs the exception object or the request URL: both carry the bot
+    token (`https://api.telegram.org/bot<token>/...`). Only the method and,
+    once there is a response, its status code.
     """
     settings = get_settings()
     if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
@@ -47,19 +53,18 @@ def send(text: str, client: httpx.Client | None = None) -> bool:
     owns_client = client is None
     client = client or httpx.Client()
     try:
-        response = client.post(
-            _API.format(token=settings.TELEGRAM_BOT_TOKEN, method="sendMessage"),
-            json={
-                "chat_id": settings.TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-            },
-        )
-        response.raise_for_status()
+        try:
+            response = client.post(
+                _API.format(token=settings.TELEGRAM_BOT_TOKEN, method="sendMessage"),
+                json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": text},
+            )
+        except httpx.HTTPError as exc:
+            log.warning("telegram sendMessage POST failed: %s", type(exc).__name__)
+            return False
+        if response.status_code >= 400:
+            log.warning("telegram sendMessage failed: status=%s", response.status_code)
+            return False
         return True
-    except httpx.HTTPError:
-        log.exception("telegram sendMessage failed")
-        return False
     finally:
         if owns_client:
             client.close()
@@ -174,7 +179,10 @@ def _handle_command(session: Session, client: httpx.Client, text: str) -> None:
 def poll_once(session: Session, client: httpx.Client, offset: int) -> int:
     """One `getUpdates` round. Returns the offset for the next call — the
     highest `update_id` seen plus one, so a delivered update is never
-    replayed even when it was ignored (a foreign chat, a malformed command).
+    replayed even when it was ignored (a foreign chat, a malformed command,
+    or one that blew up while being handled).
+
+    Never logs the exception object or the request URL — see `send`.
     """
     settings = get_settings()
     if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
@@ -185,11 +193,13 @@ def poll_once(session: Session, client: httpx.Client, offset: int) -> int:
             _API.format(token=settings.TELEGRAM_BOT_TOKEN, method="getUpdates"),
             params={"offset": offset, "timeout": 0},
         )
-        response.raise_for_status()
-        updates = response.json().get("result", [])
-    except httpx.HTTPError:
-        log.exception("telegram getUpdates failed")
+    except httpx.HTTPError as exc:
+        log.warning("telegram getUpdates GET failed: %s", type(exc).__name__)
         return offset
+    if response.status_code >= 400:
+        log.warning("telegram getUpdates failed: status=%s", response.status_code)
+        return offset
+    updates = response.json().get("result", [])
 
     for update in updates:
         offset = update["update_id"] + 1
@@ -199,7 +209,12 @@ def poll_once(session: Session, client: httpx.Client, offset: int) -> int:
             continue
         if str(message.get("chat", {}).get("id")) != str(settings.TELEGRAM_CHAT_ID):
             continue
-        _handle_command(session, client, text)
+        try:
+            _handle_command(session, client, text)
+        except Exception:
+            # A bad update (a DB hiccup, an unexpected shape) must not stall
+            # the offset — that would replay the same update forever.
+            log.exception("telegram command handling failed")
 
     return offset
 

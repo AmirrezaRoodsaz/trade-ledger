@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from trade_ledger import db
-from trade_ledger.bots import alerts, monitor
+from trade_ledger.bots import alerts, monitor, telegram
 from trade_ledger.enums import (
     AlertSeverity,
     BotStatus,
@@ -566,3 +566,61 @@ def test_create_app_with_background_runs_and_cancels_the_monitor(monkeypatch):
         assert seen == ["started"]
 
     assert seen == ["started", "cancelled"]
+
+
+def _spy_telegram_loop(monkeypatch) -> list[str]:
+    """Same shape as `_spy_loop`, for `telegram.loop`."""
+    seen: list[str] = []
+
+    async def fake_loop(*args, **kwargs):
+        seen.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            raise
+
+    monkeypatch.setattr(telegram, "loop", fake_loop)
+    return seen
+
+
+def test_background_starts_telegram_and_registers_notify_when_configured(monkeypatch):
+    """Registration must happen only once an app actually goes live with
+    `background=True` — never at import, or a developer with real Telegram
+    keys in `.env` would arm a live notifier on every `pytest` run.
+    """
+    from fastapi.testclient import TestClient
+
+    from trade_ledger.main import create_app
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+    _spy_loop(monkeypatch)
+    telegram_seen = _spy_telegram_loop(monkeypatch)
+
+    try:
+        with TestClient(create_app(db_path=":memory:", background=True)) as test_client:
+            assert test_client.get("/api/bots").status_code == 200
+            assert telegram_seen == ["started"]
+            assert telegram.notify in alerts.NOTIFIERS
+
+        assert telegram_seen == ["started", "cancelled"]
+    finally:
+        if telegram.notify in alerts.NOTIFIERS:
+            alerts.NOTIFIERS.remove(telegram.notify)
+
+
+def test_background_skips_telegram_when_unconfigured(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from trade_ledger.main import create_app
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    _spy_loop(monkeypatch)
+    telegram_seen = _spy_telegram_loop(monkeypatch)
+
+    with TestClient(create_app(db_path=":memory:", background=True)) as test_client:
+        assert test_client.get("/api/bots").status_code == 200
+        assert telegram_seen == []
+        assert telegram.notify not in alerts.NOTIFIERS
