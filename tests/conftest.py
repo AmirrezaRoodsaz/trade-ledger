@@ -6,9 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trade_ledger import db
-from trade_ledger.enums import AccountKind, AssetClass, Mode, Venue
+from trade_ledger.bots.auth import issue_token
+from trade_ledger.enums import AccountKind, AssetClass, BotHost, Mode, Venue
 from trade_ledger.main import create_app
-from trade_ledger.models import Account, Instrument
+from trade_ledger.models import Account, Bot, Instrument
 
 
 @pytest.fixture()
@@ -49,6 +50,31 @@ def instrument_factory(session):
         session.add(instrument)
         session.flush()
         return instrument
+
+    return make
+
+
+@pytest.fixture()
+def bot_factory(session, account_factory):
+    """`(bot, token)` — the plaintext token is only knowable at creation."""
+
+    def make(**kwargs) -> tuple[Bot, str]:
+        token, token_hash = issue_token()
+        name = kwargs.pop("name", f"bot-{uuid4().hex[:8]}")
+        defaults = {
+            "slug": name,
+            "name": name,
+            "strategy": "donchian",
+            "host": BotHost.LOCAL,
+            "token_hash": token_hash,
+        }
+        defaults.update(kwargs)
+        if "account_id" not in defaults:
+            defaults["account_id"] = account_factory().id
+        bot = Bot(**defaults)
+        session.add(bot)
+        session.flush()
+        return bot, token
 
     return make
 

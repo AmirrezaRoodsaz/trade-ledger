@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from trade_ledger import settings
+from trade_ledger import db, settings
 from trade_ledger.enums import Direction, TradeStatus, TxSource, TxType
 from trade_ledger.models import Setting, Trade, Transaction
 
@@ -109,7 +109,7 @@ def test_account_tax_wallet_defaults_to_name(account_factory):
 def test_init_db_seeds_schema_version(session):
     row = session.get(Setting, "schema_version")
     assert row is not None
-    assert row.value == "1"
+    assert row.value == db.SCHEMA_VERSION
 
 
 def test_env_status_detects_presence(tmp_path, monkeypatch):
