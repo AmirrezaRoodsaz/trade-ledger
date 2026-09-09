@@ -4,7 +4,9 @@ the equity curve, the R histogram, the trade calendar and the stage gate.
 Pure computation over `list[Trade]` — ORM rows or duck-typed objects with the
 same attributes (`status`, `risk_eur`, `result_eur`, `r_multiple`, `mae_r`,
 `mfe_r`, `opened_ts`, `closed_ts`, `adherence`, `mistake`, `tags`,
-`emotion_post`). No session, no query, no import from `..db` or `..models`.
+`emotion_post`). No session and no query — with one exception at the bottom:
+`stage_capital` reads the one `Setting` row the stage gate needs, so the two
+callers of the gate cannot drift apart on the default.
 
 `breakdown`'s `playbook`/`instrument`/`account` keys need names the trade row
 itself doesn't carry (only the foreign-key ids do) — the caller is expected
@@ -20,6 +22,7 @@ from datetime import timedelta
 from decimal import ROUND_FLOOR, Decimal
 
 from ..enums import TradeStatus
+from ..models import Setting
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -359,7 +362,7 @@ def calendar(trades, year: int, month: int) -> dict[str, dict]:
     return out
 
 
-_MIN_TRADES = {"paper": 30, "live": 50}
+MIN_TRADES = {"paper": 30, "live": 50}
 _MIN_ADHERENCE = Decimal("0.90")
 _MAX_DRAWDOWN_RATIO = Decimal("0.20")
 _NEXT = {
@@ -373,11 +376,11 @@ def stage_gate(trades, mode: str, capital: Decimal) -> dict:
     trades (30 paper / 50 live), positive expectancy, adherence >= 90 %, and
     max drawdown (EUR) within 20 % of `capital`.
     """
-    if mode not in _MIN_TRADES:
+    if mode not in MIN_TRADES:
         raise ValueError(f"stage-gate requires mode 'paper' or 'live', got {mode!r}")
 
     stats = compute_stats(trades)
-    min_trades = _MIN_TRADES[mode]
+    min_trades = MIN_TRADES[mode]
     dd_ratio = (stats.max_dd_eur / capital) if capital > 0 else None
     adherence_actual = stats.adherence if stats.adherence is not None else Decimal(0)
 
@@ -414,3 +417,13 @@ def stage_gate(trades, mode: str, capital: Decimal) -> dict:
         "passed": all(c["passed"] for c in checks),
         "next": _NEXT[mode],
     }
+
+
+def stage_capital(session, mode: str) -> Decimal:
+    """The capital the stage gate measures drawdown against: the
+    `stage_capital_<mode>` setting, else the ladder's own figures.
+    """
+    row = session.get(Setting, f"stage_capital_{mode}")
+    if row is not None:
+        return Decimal(row.value)
+    return Decimal(2500) if mode == "paper" else Decimal(250)
