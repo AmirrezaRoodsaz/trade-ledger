@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { del, get, post, postForm, put, useAction, useApi } from "../api/client";
+import { ApiError, del, get, post, postForm, put, soft, useAction, useApi } from "../api/client";
 import {
   ACCOUNT_KINDS,
   IMPORT_FORMATS,
@@ -769,6 +769,78 @@ function AppSettingsSection() {
   );
 }
 
+// --- Telegram --------------------------------------------------------------
+
+const TELEGRAM_KEYS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"];
+
+function TelegramSection() {
+  // ponytail: env-status is 404-safe so this section still renders on a
+  // backend that predates the two keys — they simply read "not configured".
+  const env = useApi(() => soft(get<EnvStatus>("/settings/env-status")));
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const action = useAction();
+  const status = env.data ?? {};
+
+  return (
+    <Card title="Telegram">
+      <Err message={env.error} />
+      <ul className="grid gap-1">
+        {TELEGRAM_KEYS.map((key) => {
+          const present = status[key] === true;
+          return (
+            <li key={key} className="flex items-center gap-2">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${present ? "bg-pos" : "bg-neg"}`}
+                aria-label={present ? "set" : "missing"}
+              />
+              <span>{key}</span>
+              {!present && <span className="text-muted">not configured</span>}
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          className="btn"
+          disabled={action.busy}
+          onClick={() =>
+            void action.run(async () => {
+              setResult(null);
+              try {
+                const sent = await post<{ ok: boolean; detail?: string }>(
+                  "/settings/telegram/test",
+                );
+                setResult({
+                  ok: sent.ok,
+                  text: sent.detail ?? (sent.ok ? "Test message sent." : "Telegram refused it."),
+                });
+              } catch (caught) {
+                if (caught instanceof ApiError && caught.status === 404) {
+                  setResult({ ok: false, text: "Telegram not available yet." });
+                  return;
+                }
+                throw caught;
+              }
+            })
+          }
+        >
+          Send test message
+        </button>
+        {result !== null && (
+          <span className={result.ok ? "text-pos" : "text-neg"}>{result.text}</span>
+        )}
+      </div>
+
+      <Err message={action.error} />
+      <p className="mt-3 text-[11px] text-muted">
+        Outbound alerts and inbound commands both use these two keys; inbound only accepts messages
+        from that chat id.
+      </p>
+    </Card>
+  );
+}
+
 export function Settings() {
   const accounts = useApi(() => get<Account[]>("/accounts"));
   const rows = accounts.data ?? [];
@@ -784,6 +856,7 @@ export function Settings() {
         <PlaybooksSection />
         <TagsSection />
         <AppSettingsSection />
+        <TelegramSection />
       </div>
     </>
   );

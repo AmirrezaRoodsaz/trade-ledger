@@ -5,6 +5,7 @@ import { Analytics } from "./pages/Analytics";
 import { Dashboard } from "./pages/Dashboard";
 import { Journal } from "./pages/Journal";
 import { Portfolio } from "./pages/Portfolio";
+import { Presets } from "./pages/Presets";
 import { Reports } from "./pages/Reports";
 import { Settings } from "./pages/Settings";
 import { Steuer } from "./pages/Steuer";
@@ -21,6 +22,7 @@ export function App() {
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="steuer" element={<Steuer />} />
           <Route path="reports" element={<Reports />} />
+          <Route path="bots/presets" element={<Presets />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
