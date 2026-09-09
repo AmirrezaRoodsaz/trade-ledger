@@ -1,10 +1,19 @@
 """The bot's only way to reach the app: push protocol plus journal calls.
 
-Every call retries a connection failure or a 5xx three times (1/2/4 s) and
-then raises `AppUnreachable`. That exception is the safety interlock the
-runner is built on: no app, no journal entry, and therefore no order.
+Retries are **method-dependent**, because a retry is only safe when the call
+is:
 
-A 4xx is never retried — a rejected payload or a bad token does not get
+* `GET` and `PATCH` (idempotent) retry a connection failure or a 5xx three
+  times, 1/2/4 s apart;
+* `POST` is sent exactly once. A 502 from a proxy does not say whether the
+  app committed the write, so a blind retry is how you get two planned
+  trades — or two orders — for one signal.
+
+Either way an unknown outcome raises `AppUnreachable`, the safety interlock
+the runner is built on: no app, no journal entry, and therefore no order. The
+runner reconciles against the journal and the exchange; it never retries.
+
+A 4xx raises straight away — a rejected payload or a bad token does not get
 better by asking again.
 """
 
@@ -20,8 +29,8 @@ from uuid import uuid4
 
 import httpx
 
-_ATTEMPTS = 4  # the first try plus the three retries
-_BACKOFF_S = (1, 2, 4)
+_BACKOFF_S = (1, 2, 4)  # the three retries after the first try
+_RETRYABLE_METHODS = frozenset({"GET", "PATCH"})
 
 # Patched in tests. A module attribute rather than a constructor argument so
 # the signature stays the one the plan and the runner agreed on.
@@ -48,10 +57,16 @@ def _jsonable(value: Any) -> Any:
 
 
 def _quote_ccy(symbol: str) -> str:
-    """`"BTC/USDT:USDT"` -> `"USDT"`, `"BTC/EUR"` -> `"EUR"`, bare -> `"EUR"`."""
-    _, _, rest = symbol.partition("/")
+    """`"BTC/USDT:USDT"` -> `"USDT"`, `"BTC/EUR"` -> `"EUR"`.
+
+    A symbol with no quote leg is a caller bug, not a EUR instrument —
+    guessing here would book a USDT position against a EUR cost base.
+    """
+    _, slash, rest = symbol.partition("/")
     quote = rest.partition(":")[0]
-    return quote or "EUR"
+    if not slash or not quote:
+        raise ValueError(f"symbol without a quote currency: {symbol!r}")
+    return quote
 
 
 class BotClient:
@@ -78,8 +93,9 @@ class BotClient:
         self, method: str, path: str, body: Any = None, params: dict | None = None
     ) -> Any:
         url = f"{self._base}{path}"
+        attempts = 1 + len(_BACKOFF_S) if method in _RETRYABLE_METHODS else 1
         last: Exception | None = None
-        for attempt in range(_ATTEMPTS):
+        for attempt in range(attempts):
             try:
                 response = self._client.request(
                     method,
@@ -99,9 +115,9 @@ class BotClient:
                     request=response.request,
                     response=response,
                 )
-            if attempt < len(_BACKOFF_S):
+            if attempt + 1 < attempts:
                 _sleep(_BACKOFF_S[attempt])
-        raise AppUnreachable(f"{method} {path} failed after {_ATTEMPTS} attempts: {last}")
+        raise AppUnreachable(f"{method} {path} failed after {attempts} attempt(s): {last}")
 
     def _bot(self, method: str, tail: str, body: Any = None) -> Any:
         return self._request(method, f"/api/bots/{self.slug}/{tail}", body)
@@ -201,6 +217,12 @@ class BotClient:
         """Journal the intent *before* the order exists. The returned trade's
         `external_ref` is the client order id the order must carry, so a fill
         can always be traced back to the plan that authorised it.
+
+        Sent once, never retried (see the module docstring): a duplicate
+        planned trade would authorise a second order for one signal.
+        # ponytail: no pre-flight "does this ref already exist" GET, because
+        # `/api/trades` has no `external_ref` filter to ask with. Add one
+        # here if the app ever grows that query param.
         """
         return self._request(
             "POST",

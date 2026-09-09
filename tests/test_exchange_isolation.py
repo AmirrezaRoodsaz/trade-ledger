@@ -13,6 +13,7 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
+import ccxt
 import pytest
 
 from trade_ledger.botkit.exchange import Exchange
@@ -49,7 +50,13 @@ def test_the_app_never_imports_the_write_capable_module():
 class FakeCcxt:
     """Only the ccxt surface `Exchange` is allowed to touch."""
 
-    def __init__(self, positions=None, balance=None, ohlcv=None, leverage_max=10):
+    def __init__(
+        self, positions=None, balance=None, ohlcv=None, leverage_max=10, bulk_cancel=True
+    ):
+        # ccxt defines `cancel_all_orders` on every exchange class and raises
+        # `NotSupported` from most of them; `has` is what says whether it works.
+        self.has = {"cancelAllOrders": bulk_cancel}
+        self.leverage_error: Exception | None = None
         self.orders: list[dict] = []
         self.cancelled: list[str] = []
         self.leverage_calls: list[tuple] = []
@@ -102,9 +109,16 @@ class FakeCcxt:
         return order
 
     def cancel_all_orders(self, symbol):
+        if not self.has["cancelAllOrders"]:
+            raise ccxt.NotSupported("okx cancelAllOrders() is not supported yet")
         self.cancelled.append(symbol)
 
+    def cancel_order(self, order_id, symbol=None):
+        self.cancelled.append(order_id)
+
     def set_leverage(self, leverage, symbol, params=None):
+        if self.leverage_error is not None:
+            raise self.leverage_error
         self.leverage_calls.append((leverage, symbol, params))
 
     def set_sandbox_mode(self, enabled):
@@ -169,12 +183,40 @@ def test_leverage_never_exceeds_the_venue_maximum():
 def test_place_stop_is_reduce_only_with_a_stop_price():
     fake = FakeCcxt()
 
-    _swap(fake).place_stop("BTC/USDT:USDT", "sell", Decimal("0.025"), Decimal(57000), "ref123")
+    event = _swap(fake).place_stop(
+        "BTC/USDT:USDT", "sell", Decimal("0.025"), Decimal(57000), "ref123"
+    )
 
     params = fake.orders[0]["params"]
     assert params["stopLossPrice"] == 57000.0
     assert params["reduceOnly"] is True
-    assert params["clientOrderId"] == "ref123"
+    # Its own id: two live orders may not share one, and the prefix still
+    # ties the stop to the entry's trade.
+    assert params["clientOrderId"] == "ref123sl"
+    assert event["client_id"] == "ref123sl"
+
+
+def test_the_stop_client_id_stays_inside_the_32_character_budget():
+    fake = FakeCcxt()
+    entry_id = "a" * 32  # already at the limit
+
+    _swap(fake).place_stop("BTC/USDT:USDT", "sell", Decimal(1), Decimal(57000), entry_id)
+
+    stop_id = fake.orders[0]["params"]["clientOrderId"]
+    assert stop_id == "a" * 29 + "sl"
+    assert len(stop_id) <= 32 and stop_id.isalnum()
+
+
+def test_a_refused_leverage_call_warns_instead_of_blocking_the_order():
+    # An exit must never be stopped by a configuration call — leverage is
+    # usually already set from an earlier run anyway.
+    fake = FakeCcxt()
+    fake.leverage_error = ccxt.BaseError("position exists")
+
+    event = _swap(fake).place_order("BTC/USDT:USDT", "sell", Decimal(1), "ref")
+
+    assert len(fake.orders) == 1
+    assert "leverage not set on BTC/USDT:USDT" in event["warning"]
 
 
 def test_spot_orders_carry_no_margin_parameters_and_set_no_leverage():
@@ -237,13 +279,10 @@ def test_cancel_all_prefers_the_bulk_call_and_records_an_event():
 
 
 def test_cancel_all_falls_back_to_cancelling_each_open_order():
-    class NoBulk(FakeCcxt):
-        cancel_all_orders = None
+    # `cancel_all_orders` still *exists* here, as it does on every ccxt
+    # exchange — it just raises. The capability flag is what decides.
+    fake = FakeCcxt(bulk_cancel=False)
 
-        def cancel_order(self, order_id, symbol=None):
-            self.cancelled.append(order_id)
-
-    fake = NoBulk()
     _swap(fake).cancel_all("BTC/USDT:USDT")
 
     assert fake.cancelled == ["o1", "o2"]
@@ -300,7 +339,7 @@ def test_positions_normalise_to_decimal_and_skip_flat_rows():
             "side": "long",
             "qty": Decimal("0.03"),
             "avg_entry": Decimal(60000),
-            "unrealised": None,
+            "unrealised_quote": None,
         }
     ]
 
@@ -313,9 +352,23 @@ def test_spot_has_no_positions_only_balances():
     assert spot.balances() == {"BTC": Decimal("0.4")}
 
 
-@pytest.mark.parametrize("method", ["create_order", "cancel_all_orders", "set_leverage"])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "create_order",
+        "create_limit_order",
+        "create_market_order",
+        "edit_order",
+        "cancel_order",
+        "cancel_all_orders",
+        "set_leverage",
+        "set_margin_mode",
+    ],
+)
 def test_the_wrapper_is_the_only_caller_of_the_write_methods(method):
-    """A grep-style guard: no other module in the package names these."""
+    """A grep-style guard: no other module in the package names these — a
+    method nothing calls at all is fine, a method a second file calls is not.
+    """
     hits = subprocess.run(
         ["grep", "-rl", f"{method}(", "trade_ledger"],
         cwd=REPO,
@@ -323,4 +376,4 @@ def test_the_wrapper_is_the_only_caller_of_the_write_methods(method):
         text=True,
         check=False,
     ).stdout.split()
-    assert hits == ["trade_ledger/botkit/exchange.py"]
+    assert set(hits) <= {"trade_ledger/botkit/exchange.py"}

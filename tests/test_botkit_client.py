@@ -67,28 +67,84 @@ def no_sleep(monkeypatch):
 # -- retries ------------------------------------------------------------------
 
 
-def test_connection_failure_retries_three_times_then_raises(no_sleep):
+def test_a_get_retries_three_times_and_then_raises(no_sleep):
     attempts = []
 
     def handler(request):
         attempts.append(request)
         raise httpx.ConnectError("refused", request=request)
 
-    with pytest.raises(AppUnreachable, match="after 4 attempts"):
-        _client(handler).heartbeat(None, "abc123")
+    with pytest.raises(AppUnreachable, match="after 4 attempt"):
+        _client(handler).get_config()
 
     assert len(attempts) == 4  # the first try plus three retries
     assert no_sleep == [1, 2, 4]
 
 
-def test_server_error_retries_and_then_succeeds(no_sleep):
+def test_a_get_retries_a_server_error_and_then_succeeds(no_sleep):
     replies = [500, 502, 200]
 
     def handler(request):
-        return httpx.Response(replies.pop(0), json={"id": 9})
+        return httpx.Response(replies.pop(0), json=CONFIG)
 
-    assert _client(handler).start_run() == 9
+    assert _client(handler).get_config() == CONFIG
     assert no_sleep == [1, 2]
+
+
+def test_a_post_is_sent_once_and_never_retried(no_sleep):
+    # A proxy 502 or a dropped connection does not say whether the app
+    # committed the write. Retrying is how one signal becomes two trades.
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(AppUnreachable, match="after 1 attempt"):
+        _client(handler).heartbeat(None, "abc123")
+
+    assert len(attempts) == 1
+    assert no_sleep == []
+
+
+def test_a_post_that_answers_5xx_is_not_retried_either(no_sleep):
+    # A 502 leaves the outcome unknown — the app may well have committed the
+    # trade. `AppUnreachable`, once, and the runner reconciles.
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        if request.method == "GET":
+            body = CONFIG if "config" in request.url.path else []
+            return httpx.Response(200, json=body)
+        return httpx.Response(502, json={"detail": "bad gateway"})
+
+    with pytest.raises(AppUnreachable, match="after 1 attempt"):
+        _client(handler).plan_trade(
+            instrument_symbol="BTC/USDT:USDT",
+            asset_class="perp",
+            direction="long",
+            entry=Decimal(60000),
+            stop=Decimal(57000),
+            risk_eur=Decimal(75),
+            qty=Decimal("0.025"),
+            reason="breakout",
+        )
+
+    # The instrument POST is the first write and it is tried exactly once.
+    assert [r.url.path for r in attempts if r.method == "POST"] == ["/api/instruments"]
+    assert no_sleep == []
+
+
+def test_a_patch_is_retried(no_sleep):
+    replies = [503, 200]
+
+    def handler(request):
+        return httpx.Response(replies.pop(0), json={})
+
+    _client(handler).finish_run(12, "ok", {})
+
+    assert no_sleep == [1]
 
 
 def test_client_error_is_not_retried(no_sleep):
@@ -99,7 +155,7 @@ def test_client_error_is_not_retried(no_sleep):
         return httpx.Response(422, json={"detail": "bad payload"})
 
     with pytest.raises(httpx.HTTPStatusError):
-        _client(handler).push_state(equity_eur=Decimal(1000))
+        _client(handler).get_config()
 
     assert len(calls) == 1
     assert no_sleep == []
@@ -225,6 +281,11 @@ def test_plan_trade_creates_the_instrument_only_when_it_is_missing():
     # config and the instrument list are each fetched once per process
     assert recorder.seen.count(("GET", "/api/instruments")) == 1
     assert recorder.seen.count(("GET", f"/api/bots/{SLUG}/config")) == 1
+
+
+def test_a_symbol_without_a_quote_currency_is_rejected():
+    with pytest.raises(ValueError, match="without a quote currency"):
+        client_module._quote_ccy("BTC")
 
 
 def test_new_instrument_takes_its_quote_currency_from_the_symbol():

@@ -90,6 +90,10 @@ class Exchange:
     def positions(self) -> list[dict]:
         """Open derivative positions, normalised.
 
+        `unrealised_quote` is in the market's **quote** currency (USDT on a
+        USDT-margined swap), not EUR — the runner converts it before it goes
+        anywhere near a EUR figure.
+
         Spot has no position concept — exposure is whatever `balances()`
         holds, and only the caller knows which of those balances its pairs
         refer to, so this returns `[]` there.
@@ -108,7 +112,7 @@ class Exchange:
                     "side": raw.get("side"),
                     "qty": qty,
                     "avg_entry": _dec(raw.get("entryPrice")),
-                    "unrealised": _dec(raw.get("unrealizedPnl")),
+                    "unrealised_quote": _dec(raw.get("unrealizedPnl")),
                 }
             )
         return out
@@ -168,18 +172,31 @@ class Exchange:
         """Per-order params. Spot has no margin mode."""
         return {} if self.market_type == "spot" else {"tdMode": self._margin_mode}
 
-    def _ensure_leverage(self, symbol: str) -> None:
-        """Once per symbol, and never above the preset's cap."""
+    def _ensure_leverage(self, symbol: str) -> str | None:
+        """Once per symbol, and never above the preset's cap.
+
+        Returns a warning string instead of raising when the venue refuses:
+        leverage is already set from a previous run more often than not, and
+        an exit must never be blocked by a configuration call. The order that
+        follows still carries `tdMode`, and the cap it could not lower is on
+        the event for the app to alert on.
+        """
         if self.market_type == "spot" or symbol in self._levered:
-            return
-        market_max = ((self._market(symbol).get("limits") or {}).get("leverage") or {}).get("max")
-        cap = self.leverage_cap
-        if market_max is not None:
-            cap = min(cap, Decimal(str(market_max)))
-        # `mgnMode`, not `tdMode`: setLeverage and createOrder spell the same
-        # setting differently on OKX.
-        self._ex.set_leverage(max(1, int(cap)), symbol, params={"mgnMode": self._margin_mode})
+            return None
+        try:
+            market_max = (
+                (self._market(symbol).get("limits") or {}).get("leverage") or {}
+            ).get("max")
+            cap = self.leverage_cap
+            if market_max is not None:
+                cap = min(cap, Decimal(str(market_max)))
+            # `mgnMode`, not `tdMode`: setLeverage and createOrder spell the
+            # same setting differently on OKX.
+            self._ex.set_leverage(max(1, int(cap)), symbol, params={"mgnMode": self._margin_mode})
+        except ccxt.BaseError as exc:
+            return f"leverage not set on {symbol}: {exc}"
         self._levered.add(symbol)
+        return None
 
     def _event(self, action: str, symbol: str, order: dict | None, **extra: Any) -> dict:
         order = order or {}
@@ -201,34 +218,56 @@ class Exchange:
         """Market entry or exit. `client_id` is the journal's `external_ref`,
         so every order on the venue points back at a planned trade.
         """
-        self._ensure_leverage(symbol)
+        warning = self._ensure_leverage(symbol)
         params = {"clientOrderId": client_id, **self._params()}
         order = self._ex.create_order(symbol, "market", side, float(qty), None, params)
-        return self._event("place_order", symbol, order, side=side, qty=str(qty),
-                           client_id=client_id)
+        # `client_id` from what was *sent*, not from the echo: a venue that
+        # omits `clientOrderId` in its reply must not cost us the link back
+        # to the trade.
+        return self._event(
+            "place_order", symbol, order, side=side, qty=str(qty),
+            client_id=client_id, warning=warning,
+        )
 
     def place_stop(
         self, symbol: str, side: str, qty: Decimal, stop_price: Decimal, client_id: str
     ) -> dict:
         """Resting stop. `reduceOnly` on derivatives so a stop can only ever
         shrink a position, never open the opposite one.
+
+        The stop gets its own client order id, `<entry ref>sl` — two live
+        orders may not share one id, and the shared prefix still ties the
+        stop to its trade. `client_id` is trimmed to 29 characters first so
+        the result fits the 32-character budget (OKX's `clOrdId` limit).
         """
-        self._ensure_leverage(symbol)
+        warning = self._ensure_leverage(symbol)
+        stop_id = f"{client_id[:29]}sl"
         params = {
-            "clientOrderId": client_id,
+            "clientOrderId": stop_id,
             "stopLossPrice": float(stop_price),
             **self._params(),
         }
         if self.market_type != "spot":
             params["reduceOnly"] = True
         order = self._ex.create_order(symbol, "market", side, float(qty), None, params)
-        return self._event("place_stop", symbol, order, side=side, qty=str(qty),
-                           stop_price=str(stop_price), client_id=client_id)
+        return self._event(
+            "place_stop",
+            symbol,
+            order,
+            side=side,
+            qty=str(qty),
+            stop_price=str(stop_price),
+            client_id=stop_id,
+            warning=warning,
+        )
 
     def cancel_all(self, symbol: str) -> None:
-        cancel_all_orders = getattr(self._ex, "cancel_all_orders", None)
-        if callable(cancel_all_orders):
-            cancel_all_orders(symbol)
+        """`ccxt` defines `cancel_all_orders` on every exchange class and
+        raises `NotSupported` from most of them (OKX included), so the
+        capability flag decides, never the attribute.
+        """
+        if (getattr(self._ex, "has", None) or {}).get("cancelAllOrders"):
+            self._ex.cancel_all_orders(symbol)
         else:
             for order in self._ex.fetch_open_orders(symbol) or []:
                 self._ex.cancel_order(order["id"], symbol)
