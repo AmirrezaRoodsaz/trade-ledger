@@ -184,7 +184,8 @@ def test_launch_without_env_file_alerts_and_skips(session, bot_factory):
 
 
 def _real_popen(argv, **kwargs):
-    """Ignore the botkit argv (Task 8 owns it) and run a tiny failing script."""
+    """Ignore the botkit argv — the bot process is not what is under test here —
+    and run a tiny failing script instead."""
     return subprocess.Popen(
         [sys.executable, "-c", "import sys; print('hello from the bot'); sys.exit(3)"], **kwargs
     )

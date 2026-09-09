@@ -21,10 +21,10 @@ log = logging.getLogger(__name__)
 
 COOLDOWN = timedelta(hours=6)
 
-# Task 5 appends the Telegram sender here. Called with the freshly created
-# alert and its bot; a notifier that raises is logged, never propagated —
-# the alert row already exists and losing it to a network error would be
-# worse than a missed message.
+# The Telegram sender appends itself here at app startup. Called with the
+# freshly created alert and its bot; a notifier that raises is logged,
+# never propagated — the alert row already exists and losing it to a
+# network error would be worse than a missed message.
 NOTIFIERS: list[Callable[[Alert, Bot | None], None]] = []
 
 

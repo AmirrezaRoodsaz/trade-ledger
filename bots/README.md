@@ -35,9 +35,11 @@ $EDITOR data/bots/<slug>/.env      # BOT_TOKEN, exchange keys
 
 (`trade-bot new <name>` writes that file for you, already `chmod 600`.)
 
-`data/` is gitignored. Nothing else in the repo reads exchange keys — not the
-app, not the supervisor, which passes this file through to the child process
-and never looks inside it.
+`data/` is gitignored. Nothing in the repo *trades* with these keys except the
+bot process. The supervisor does read the file — that is how a local bot's
+child process gets its environment — but it neither logs nor stores what it
+read, and the app cannot place an order with it: it never imports the exchange
+wrapper, and a test enforces that.
 
 Keys: read + trade, **no withdrawal**, IP-restricted to the machine the bot
 runs on. Give each bot its own venue sub-account where the venue offers one —

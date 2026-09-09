@@ -1,6 +1,6 @@
 [project]
 name = "trade-ledger"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local trade and investment logger: journal, portfolio and German tax record keeping."
 readme = "README.md"
 requires-python = ">=3.13"

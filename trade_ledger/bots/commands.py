@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from ..enums import BotHost, CommandKind, EventKind
 from ..models import Bot, BotCommand, BotEvent
 
-# Task 6 (local supervisor) registers its launch function here. `issue`
+# The local supervisor registers its launch function here. `issue`
 # calls every hook when a `run_now` lands on a local bot, so a queued
 # command launches immediately instead of waiting for the next schedule
 # tick. ponytail: a plain list rather than a pub/sub bus — one hook today.
