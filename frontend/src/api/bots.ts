@@ -178,3 +178,67 @@ export const listAlerts = (params = "") => get<Alert[]>(`/alerts${params}`);
 /** A live-mode bot's account makes `reason` mandatory — the API answers 422 without it. */
 export const assignPreset = (slug: string, version_id: number, reason?: string) =>
   post<PresetAssigned>(`/bots/${slug}/preset`, { version_id, reason: reason || null });
+
+// --- bot detail: runs, events, command queue --------------------------------
+// Appended after the fleet's own exports: everything the detail page needs
+// that the fleet page did not already declare. `ackAlert` sits with the other
+// alert call. ponytail: the alert calls stay in this module — two functions
+// do not earn a file.
+
+import { ApiError } from "./client";
+
+export interface BotRun {
+  id: number;
+  bot_id: number;
+  started: string;
+  finished: string | null;
+  status: string;
+  summary: Record<string, unknown>;
+  error: string | null;
+  has_log: boolean;
+}
+
+export const EVENT_KINDS = [
+  "heartbeat",
+  "info",
+  "warning",
+  "error",
+  "kill_rule",
+  "command",
+  "config_applied",
+  "reconcile",
+  "order",
+] as const;
+export type EventKind = (typeof EVENT_KINDS)[number];
+
+export interface BotEvent {
+  id: number;
+  bot_id: number;
+  ts: string;
+  kind: string;
+  message: string;
+  payload: Record<string, unknown>;
+}
+
+export const listRuns = (slug: string, limit = 50) =>
+  get<BotRun[]>(`/bots/${slug}/runs?limit=${limit}`);
+export const listEvents = (slug: string, kind?: string, limit = 200) =>
+  get<BotEvent[]>(`/bots/${slug}/events?limit=${limit}${kind ? `&kind=${kind}` : ""}`);
+export const listCommands = (slug: string) => get<BotCommandOut[]>(`/bots/${slug}/commands`);
+export const ackAlert = (id: number) => post<Alert>(`/alerts/${id}/ack`);
+
+/** The run log is `text/plain`, so it bypasses the JSON client. */
+export async function getRunLog(slug: string, runId: number): Promise<string> {
+  const response = await fetch(`/api/bots/${slug}/runs/${runId}/log`);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") detail = payload.detail;
+    } catch {
+      // Not a JSON error body: keep the status text.
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return response.text();
+}
