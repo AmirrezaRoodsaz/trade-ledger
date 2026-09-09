@@ -2,7 +2,8 @@
 `/screenshots`, and the built frontend (`frontend/dist`) at `/` with an SPA
 fallback so a hard reload of `/journal` still lands on `index.html`.
 
-`background=True` also runs the bot monitor for as long as the app lives.
+`background=True` also runs the bot monitor and the local supervisor for
+as long as the app lives.
 It defaults to off so a test client — or any script that just wants the
 routes — never starts a task that writes to the database behind its back.
 """
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import ROUTERS
-from .bots import monitor
+from .bots import monitor, supervisor
 from .db import init_db
 from .settings import get_settings
 
@@ -28,14 +29,23 @@ _BUILD_HINT = "frontend not built: cd frontend && npm ci && npm run build"
 
 @contextlib.asynccontextmanager
 async def _background(app: FastAPI):
-    """Start the monitor loop with the app and cancel it on shutdown."""
-    task = asyncio.create_task(monitor.loop())
+    """Start the monitor and supervisor loops with the app, stop them with it.
+
+    The supervisor's launch hook lives here too: only a process that is
+    actually running the supervisor may promise that a `run_now` starts
+    something.
+    """
+    supervisor.register_hook()
+    tasks = [asyncio.create_task(monitor.loop()), asyncio.create_task(supervisor.loop())]
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        supervisor.unregister_hook()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app(db_path: str | None = None, *, background: bool = False) -> FastAPI:
