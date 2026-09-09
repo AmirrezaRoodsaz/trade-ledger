@@ -366,3 +366,17 @@ def test_bot_trades_returns_only_this_bots_closed_trades(
     rows = status.bot_trades(session, bot)
 
     assert [one.result_eur for one in rows] == [Decimal(10), Decimal(-5)]
+
+
+def test_a_slot_is_not_missed_until_the_grace_period_is_over(session, bot_factory):
+    """4-hour bot, 55 min grace: at 04:10 the 04:05 slot is five minutes
+    late, not missed. It only counts from 05:00.
+    """
+    bot, _ = bot_factory(schedule_every_s=14400, schedule_at="00:05", grace_s=3300)
+    started = datetime(2026, 9, 9, 0, 5, tzinfo=UTC)
+    run = BotRun(bot_id=bot.id, started=started, status=RunStatus.OK, finished=started)
+    session.add(run)
+    session.flush()
+
+    assert kill_rules.missed_runs(bot, run, datetime(2026, 9, 9, 4, 10, tzinfo=UTC)) == 0
+    assert kill_rules.missed_runs(bot, run, datetime(2026, 9, 9, 5, 0, tzinfo=UTC)) == 1

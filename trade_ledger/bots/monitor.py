@@ -9,6 +9,7 @@ silent is noticed even though a silent bot pushes nothing to notice.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -17,10 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import db
-from ..enums import AlertSeverity, BotStatus, CommandKind
-from ..models import Account, Bot, BotCommand, BotRun, BotState
-from . import kill_rules, status
-from .alerts import raise_alert
+from ..enums import AlertSeverity, BotStatus, CommandKind, EventKind
+from ..models import Account, Bot, BotCommand, BotEvent, BotRun, BotState
+from . import commands, kill_rules, status
+from .alerts import COOLDOWN, raise_alert
 from .capital import stage_capital_eur
 from .schedule import deadline, next_run
 
@@ -91,27 +92,35 @@ def health(session: Session, bot: Bot, now: datetime | None = None) -> dict:
 
 
 def _queue(session: Session, bot: Bot, kind: CommandKind, reason: str, now: datetime) -> None:
-    """Queue a system command unless one of that kind is already waiting.
+    """Queue a system command, unless one just like it is recent enough.
 
-    ponytail: the row is created here rather than through `bots/commands.py`,
-    which Task 4 owns and which does not exist yet. Route this through
-    `commands.issue(..., issued_by="system")` once it does — the guards it
-    adds (confirm for `flat`, reason for `resume`) are for operators, not for
-    the monitor, so the only behaviour change would be the duplicate check
-    moving one file over.
+    The cooldown is the alert cooldown, and for the same reason: a bot that
+    acknowledged a `pause` as *failed* leaves nothing pending, so `issue`'s
+    own duplicate guard would let the monitor re-queue it every minute.
+    Six hours of quiet matches what the operator sees in the alert list.
     """
-    pending = session.execute(
+    recent = session.execute(
         select(BotCommand.id).where(
             BotCommand.bot_id == bot.id,
             BotCommand.kind == kind,
-            BotCommand.acked_ts.is_(None),
+            BotCommand.issued_ts >= now - COOLDOWN,
         )
     ).first()
-    if pending is not None:
+    if recent is not None:
         return
-    session.add(
-        BotCommand(bot_id=bot.id, kind=kind, reason=reason, issued_ts=now, issued_by="system")
-    )
+    try:
+        # `confirm` is an operator guard against a fat-fingered emergency
+        # flat; the monitor is the system, and it already knows the slug.
+        command = commands.issue(
+            session, bot, kind, reason=reason, issued_by="system", confirm=bot.slug
+        )
+    except commands.CommandError as exc:
+        if exc.status_code != 409:  # not "already pending" — a real guard failed
+            raise
+        return
+    # `issue` stamps its own wall clock; the monitor's `now` is the time this
+    # evaluation is about, and the cooldown above measures against it.
+    command.issued_ts = now
 
 
 def evaluate(session: Session, bot: Bot, now: datetime | None = None) -> dict:
@@ -119,6 +128,12 @@ def evaluate(session: Session, bot: Bot, now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     report = health(session, bot, now)
     bot.status = report["status"]
+
+    if not bot.enabled:
+        # A bot the operator switched off is not misbehaving, it is off.
+        # Alerting on it forever would train them to ignore the alert list.
+        session.commit()
+        return report
 
     for rule in report["kill_rules"]:
         if rule["status"] == "ok":
@@ -128,7 +143,7 @@ def evaluate(session: Session, bot: Bot, now: datetime | None = None) -> dict:
             if rule["rule"] in kill_rules.CRITICAL_RULES
             else AlertSeverity.WARNING
         )
-        raise_alert(
+        alert = raise_alert(
             session,
             bot,
             severity,
@@ -136,12 +151,26 @@ def evaluate(session: Session, bot: Bot, now: datetime | None = None) -> dict:
             f"{rule['rule']}: {rule['detail']}",
             now=now,
         )
+        if alert is None:
+            # Deduped: the rule was already firing, so nothing changed and the
+            # timeline has the entry already. ponytail: alert creation is the
+            # only "is this new?" state we keep — no separate per-rule history.
+            continue
+        session.add(
+            BotEvent(
+                bot_id=bot.id,
+                ts=now,
+                kind=EventKind.KILL_RULE,
+                message=f"{rule['rule']} {rule['status']}: {rule['detail']}",
+                payload_json=json.dumps(rule),
+            )
+        )
         if rule["action"] == "pause" and not bot.paused_entries:
-            _queue(session, bot, CommandKind.PAUSE, rule["detail"], now)
+            _queue(session, bot, CommandKind.PAUSE, "K1 capital brake", now)
         # A `flat` for a bot nobody can reach would sit unacknowledged and
         # tell the operator nothing; the critical K5 alert is the answer there.
         if rule["action"] == "flat" and report["status"] != BotStatus.STALE:
-            _queue(session, bot, CommandKind.FLAT, rule["detail"], now)
+            _queue(session, bot, CommandKind.FLAT, "K4 naked position", now)
 
     session.commit()
     return report

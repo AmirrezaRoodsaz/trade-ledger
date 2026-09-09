@@ -12,6 +12,7 @@ hands back config and pending commands.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..bots import commands
+from ..bots import commands, monitor
 from ..bots.auth import bot_auth
 from ..bots.capital import stage_capital_eur
 from ..db import get_session
@@ -34,6 +35,7 @@ from ._common import get_account_or_404
 from .schemas import BaseModel, Money, UTCDatetime
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 # One call carries one run's worth of events. Above this a bot is looping,
 # and the app should say so rather than swallow the flood.
@@ -281,6 +283,16 @@ def push_state(
             payload={"reconciliation": payload.reconciliation},
         )
     session.commit()
+
+    # Fresh state is exactly when K1 and K4 can change their minds, so the
+    # app re-evaluates now rather than waiting up to a minute for the monitor
+    # tick (spec section 3). A failure here must not fail the push: the state
+    # is already committed, and the monitor loop retries within the minute.
+    try:
+        monitor.evaluate(session, bot, _now())
+    except Exception:
+        log.exception("post-state evaluation failed for bot %s", bot.slug)
+        session.rollback()
     return StateOut.model_validate(state)
 
 

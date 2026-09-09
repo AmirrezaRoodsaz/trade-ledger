@@ -274,6 +274,8 @@ def get_bot_env_status(slug: str, session: Session = Depends(get_session)):
 
 def env_path(slug: str) -> Path:
     return Path(get_settings().DATA_DIR) / "bots" / slug / ".env"
+
+
 @router.get("/bots/{slug}/health", response_model=HealthOut)
 def get_bot_health(slug: str, session: Session = Depends(get_session)):
     """The app's own verdict, computed fresh. A read: it raises no alert and

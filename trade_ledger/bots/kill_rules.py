@@ -74,15 +74,20 @@ def drawdown_pct(state: BotState | None) -> Decimal | None:
 def missed_runs(bot: Bot, last_run: BotRun | None, now: datetime) -> int:
     """Schedule slots that came and went since the last run started.
 
+    A slot only counts as missed once `grace_s` past it has gone by, the same
+    allowance K5 gives a heartbeat — a bot that starts a minute late has not
+    missed anything.
+
     Zero for a bot that has never run — K5 is the rule that notices a bot
     which never showed up at all.
     """
     if last_run is None:
         return 0
     first = next_run(bot.schedule_every_s, bot.schedule_at, last_run.started)
-    if now < first:
+    late = (now - first).total_seconds() - bot.grace_s
+    if late < 0:
         return 0
-    return math.floor((now - first).total_seconds() / bot.schedule_every_s) + 1
+    return math.floor(late / bot.schedule_every_s) + 1
 
 
 def k1_capital(state: BotState | None, stage_capital: Decimal) -> dict:

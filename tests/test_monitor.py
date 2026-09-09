@@ -244,6 +244,102 @@ def test_a_k2_warning_alerts_at_warning_severity(
     assert _commands(session, bot, CommandKind.PAUSE) == []
 
 
+def test_a_disabled_bot_gets_no_alerts_and_no_commands(session, bot_factory):
+    """Switched off is not misbehaving. The status still updates."""
+    bot, _ = bot_factory(enabled=False, schedule_every_s=14400, grace_s=3300)
+    bot.last_heartbeat = NOW - timedelta(days=2)
+    _state(session, bot, positions=[{"symbol": "BTC/USDT:USDT", "stop_present": False}])
+
+    report = monitor.evaluate(session, bot, NOW)
+
+    assert report["status"] == BotStatus.DISABLED
+    assert bot.status == BotStatus.DISABLED
+    assert _alerts(session, bot) == []
+    assert session.execute(select(BotCommand)).scalars().all() == []
+    assert [one["status"] for one in report["kill_rules"] if one["rule"] == "K5"] == ["triggered"]
+
+
+def test_a_queued_command_goes_through_commands_issue(session, bot_factory):
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, equity_eur=Decimal(1900), peak_equity_eur=Decimal(2000))
+
+    monitor.evaluate(session, bot, NOW)
+
+    pause = _commands(session, bot, CommandKind.PAUSE)[0]
+    assert pause.reason == "K1 capital brake"
+    assert pause.issued_by == "system"
+    assert pause.issued_ts == NOW
+
+
+def test_a_flat_is_queued_despite_the_confirm_guard(session, bot_factory):
+    """`commands.issue` refuses an unconfirmed flat; the monitor knows the slug."""
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, positions=[{"symbol": "BTC/USDT:USDT", "stop_present": False}])
+
+    monitor.evaluate(session, bot, NOW)
+
+    flat = _commands(session, bot, CommandKind.FLAT)[0]
+    assert flat.reason == "K4 naked position"
+    assert flat.issued_by == "system"
+
+
+def test_a_pause_acked_as_failed_is_not_re_issued_within_the_cooldown(session, bot_factory):
+    """Nothing is pending any more, so only the cooldown stops the monitor
+    from queueing a fresh pause on every 60-second tick.
+    """
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, equity_eur=Decimal(1900), peak_equity_eur=Decimal(2000))
+    monitor.evaluate(session, bot, NOW)
+    pause = _commands(session, bot, CommandKind.PAUSE)[0]
+    pause.acked_ts = NOW + timedelta(minutes=1)
+    pause.result = "error"
+    session.commit()
+
+    bot.last_heartbeat = NOW + timedelta(minutes=2)
+    monitor.evaluate(session, bot, NOW + timedelta(minutes=2))
+
+    assert len(_commands(session, bot, CommandKind.PAUSE)) == 1
+
+
+def test_the_same_command_is_queued_again_after_the_cooldown(session, bot_factory):
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, equity_eur=Decimal(1900), peak_equity_eur=Decimal(2000))
+    monitor.evaluate(session, bot, NOW)
+    pause = _commands(session, bot, CommandKind.PAUSE)[0]
+    pause.acked_ts = NOW
+    pause.result = "error"
+    session.commit()
+
+    later = NOW + timedelta(hours=6, minutes=1)
+    bot.last_heartbeat = later
+    monitor.evaluate(session, bot, later)
+
+    assert len(_commands(session, bot, CommandKind.PAUSE)) == 2
+
+
+def test_a_firing_rule_writes_one_kill_rule_event(session, bot_factory):
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, equity_eur=Decimal(1900), peak_equity_eur=Decimal(2000))
+
+    monitor.evaluate(session, bot, NOW)
+    bot.last_heartbeat = NOW + timedelta(hours=1)
+    monitor.evaluate(session, bot, NOW + timedelta(hours=1))
+
+    events = [
+        one
+        for one in session.execute(select(BotEvent)).scalars().all()
+        if one.bot_id == bot.id and one.kind == EventKind.KILL_RULE
+    ]
+    assert len(events) == 1, "deduped alerts must not repeat the timeline entry"
+    assert json.loads(events[0].payload_json)["rule"] == "K1"
+    assert events[0].message.startswith("K1 triggered:")
+
+
 def test_health_writes_nothing(session, bot_factory):
     bot, _ = bot_factory()
     _healthy(bot)
