@@ -73,6 +73,23 @@ def test_k1_says_nothing_before_the_first_equity_push():
     assert kill_rules.k1_capital(None, CAPITAL)["status"] == "ok"
 
 
+def test_k1_warns_when_it_holds_positions_but_reports_no_equity(session, bot_factory):
+    """A USDT-quoted account never gets an `equity_eur` — the bot leaves FX to
+    the app — so the capital brake is inert while real money is at the venue.
+    An `ok` there would be a lie of omission."""
+    bot, _ = bot_factory()
+    state = _state(session, bot, positions=[{"symbol": "BTC/USDT:USDT", "stop_present": True}])
+
+    result = kill_rules.k1_capital(state, CAPITAL)
+
+    assert (result["status"], result["action"], result["value"]) == ("warning", "alert", None)
+    assert "no equity in EUR reported" in result["detail"]
+
+    # No positions and no equity is a bot that has simply not traded yet.
+    state.positions_json = "[]"
+    assert kill_rules.k1_capital(state, CAPITAL)["status"] == "ok"
+
+
 # --- K2 rolling edge --------------------------------------------------------
 
 

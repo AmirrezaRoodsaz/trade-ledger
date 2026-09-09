@@ -94,6 +94,20 @@ def k1_capital(state: BotState | None, stage_capital: Decimal) -> dict:
     """Equity at or below 80 % of stage capital, or 20 % off the peak."""
     threshold = f"{_pct(EQUITY_FLOOR_PCT)}% of capital / {_pct(MAX_DRAWDOWN_PCT)}% drawdown"
     if state is None or state.equity_eur is None:
+        if positions(state):
+            # The bot reports equity only when every pair settles in EUR (FX
+            # conversion lives in the app). A bot on a USDT account therefore
+            # has money at the venue and a capital brake that can never fire —
+            # silence there reads as "fine", so say so out loud instead.
+            return _result(
+                "K1",
+                "warning",
+                None,
+                threshold,
+                "alert",
+                "no equity in EUR reported; K1 cannot evaluate "
+                "(use an EUR-quoted account)",
+            )
         return _result("K1", "ok", None, threshold, "none", "no equity reported yet")
     if not stage_capital:
         return _result("K1", "ok", None, threshold, "none", "stage capital is zero")

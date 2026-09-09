@@ -140,7 +140,10 @@ def evaluate(session: Session, bot: Bot, now: datetime | None = None) -> dict:
             continue
         severity = (
             AlertSeverity.CRITICAL
-            if rule["rule"] in kill_rules.CRITICAL_RULES
+            # A rule that says `warning` means it: K1 says so when it cannot
+            # evaluate at all, which is not the same news as the capital brake
+            # tripping.
+            if rule["status"] == "triggered" and rule["rule"] in kill_rules.CRITICAL_RULES
             else AlertSeverity.WARNING
         )
         alert = raise_alert(

@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from trade_ledger import db
-from trade_ledger.bots import alerts, monitor, telegram
+from trade_ledger.bots import alerts, monitor, supervisor, telegram
 from trade_ledger.enums import (
     AlertSeverity,
     BotStatus,
@@ -200,7 +200,33 @@ def test_a_stale_bot_is_alerted_but_not_asked_to_go_flat(session, bot_factory):
     assert report["status"] == BotStatus.STALE
     assert bot.status == BotStatus.STALE
     assert _commands(session, bot, CommandKind.FLAT) == []
-    assert {one.kind for one in _alerts(session, bot)} == {"kill_k4", "kill_k5"}
+    # kill_k1 too: this state has positions but no equity, so K1 warns that it
+    # cannot evaluate at all.
+    assert {one.kind for one in _alerts(session, bot)} == {"kill_k1", "kill_k4", "kill_k5"}
+
+
+def test_a_k1_that_cannot_evaluate_warns_rather_than_going_critical(session, bot_factory):
+    """K1 is inert on an account whose quote currency is not EUR: the bot
+    reports no `equity_eur`, so the capital brake can never fire. Silence there
+    reads as "fine", which is exactly wrong."""
+    bot, _ = bot_factory()
+    _healthy(bot)
+    _state(session, bot, positions=[{"symbol": "BTC/USDT:USDT", "stop_present": True}])
+
+    report = monitor.evaluate(session, bot, NOW)
+
+    k1 = report["kill_rules"][0]
+    assert (k1["rule"], k1["status"], k1["action"]) == ("K1", "warning", "alert")
+    assert "no equity in EUR reported" in k1["detail"]
+    # A warning, not a critical: K1 tripping and K1 not working are different
+    # news. And no `pause` — there is nothing measured to pause over.
+    alert = next(one for one in _alerts(session, bot) if one.kind == "kill_k1")
+    assert alert.severity == AlertSeverity.WARNING
+    assert _commands(session, bot, CommandKind.PAUSE) == []
+
+    # Deduped like every other rule: a second evaluation adds nothing.
+    monitor.evaluate(session, bot, NOW + timedelta(minutes=1))
+    assert len([one for one in _alerts(session, bot) if one.kind == "kill_k1"]) == 1
 
 
 def test_a_paused_bot_is_not_asked_to_pause_again(session, bot_factory):
@@ -527,8 +553,13 @@ def test_acking_an_unknown_alert_is_404(client):
 # --- app wiring -------------------------------------------------------------
 
 
-def _spy_loop(monkeypatch) -> list[str]:
-    """Replace the monitor loop with one that records start and cancellation."""
+def _idle_loop(monkeypatch, module) -> list[str]:
+    """Replace `module.loop` with one that records start and cancellation.
+
+    Every background loop the lifespan starts has to be replaced, not just the
+    one a test is about: a real supervisor loop against the test's database is
+    a second writer nobody asked for.
+    """
     seen: list[str] = []
 
     async def fake_loop(*args, **kwargs):
@@ -539,8 +570,14 @@ def _spy_loop(monkeypatch) -> list[str]:
             seen.append("cancelled")
             raise
 
-    monkeypatch.setattr(monitor, "loop", fake_loop)
+    monkeypatch.setattr(module, "loop", fake_loop)
     return seen
+
+
+def _spy_loop(monkeypatch) -> list[str]:
+    """The monitor loop, with the supervisor's silenced alongside it."""
+    _idle_loop(monkeypatch, supervisor)
+    return _idle_loop(monkeypatch, monitor)
 
 
 def test_create_app_starts_no_background_task_by_default(monkeypatch):
@@ -570,18 +607,7 @@ def test_create_app_with_background_runs_and_cancels_the_monitor(monkeypatch):
 
 def _spy_telegram_loop(monkeypatch) -> list[str]:
     """Same shape as `_spy_loop`, for `telegram.loop`."""
-    seen: list[str] = []
-
-    async def fake_loop(*args, **kwargs):
-        seen.append("started")
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            seen.append("cancelled")
-            raise
-
-    monkeypatch.setattr(telegram, "loop", fake_loop)
-    return seen
+    return _idle_loop(monkeypatch, telegram)
 
 
 def test_background_starts_telegram_and_registers_notify_when_configured(monkeypatch):
