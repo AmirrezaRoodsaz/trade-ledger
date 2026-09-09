@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..bots.auth import bot_auth
@@ -265,6 +266,15 @@ def push_state(
     if state is None:
         state = BotState(bot_id=bot.id)
         session.add(state)
+        try:
+            session.flush()
+        except IntegrityError:
+            # ponytail: two pushes for the same bot raced. The unique index
+            # is the arbiter — take the row that won and update that.
+            session.rollback()
+            state = session.execute(
+                select(BotState).where(BotState.bot_id == bot.id)
+            ).scalar_one()
 
     state.ts = payload.ts or _now()
     state.equity_eur = payload.equity_eur
@@ -318,7 +328,12 @@ def stage_capital_eur(session: Session, bot: Bot, mode: str) -> Decimal:
         return bot.stage_capital_eur
     setting = session.get(Setting, f"stage_capital_{mode}")
     if setting is not None:
-        return Decimal(setting.value)
+        try:
+            return Decimal(setting.value)
+        except InvalidOperation as exc:
+            raise HTTPException(
+                status_code=500, detail=f"invalid stage_capital setting: {setting.key}"
+            ) from exc
     return STAGE_CAPITAL_DEFAULTS[mode]
 
 

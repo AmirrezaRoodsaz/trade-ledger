@@ -169,6 +169,14 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _require_bot_account(account_id: int, bot: Bot | None) -> None:
+    """A bot journals into its own account and no other — on create and on
+    edit, since an edit could otherwise move the trade across accounts.
+    """
+    if bot is not None and account_id != bot.account_id:
+        raise HTTPException(status_code=403, detail="account does not belong to this bot")
+
+
 def _get_trade_or_404(session: Session, trade_id: int, bot: Bot | None = None) -> Trade:
     """The trade, and — when a bot token made the call — proof it is that
     bot's own trade. One guard here rather than one per endpoint.
@@ -261,13 +269,12 @@ def create_trade(
     session: Session = Depends(get_session),
     bot: Bot | None = Depends(bot_auth),
 ):
+    _require_bot_account(payload.account_id, bot)
     get_account_or_404(session, payload.account_id)
     if session.get(Instrument, payload.instrument_id) is None:
         raise HTTPException(status_code=404, detail="instrument not found")
     data = payload.model_dump()
     if bot is not None:
-        if payload.account_id != bot.account_id:
-            raise HTTPException(status_code=403, detail="account does not belong to this bot")
         data["bot_id"] = bot.id
     return _guard(plan_trade, session, data)
 
@@ -301,8 +308,12 @@ def recompute_excursions(session: Session = Depends(get_session)):
 
 
 @router.get("/trades/{trade_id}", response_model=TradeOut)
-def get_trade(trade_id: int, session: Session = Depends(get_session)):
-    return _get_trade_or_404(session, trade_id)
+def get_trade(
+    trade_id: int,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    return _get_trade_or_404(session, trade_id, bot)
 
 
 @router.put("/trades/{trade_id}", response_model=TradeOut)
@@ -313,6 +324,7 @@ def update_trade(
     bot: Bot | None = Depends(bot_auth),
 ):
     trade = _get_trade_or_404(session, trade_id, bot)
+    _require_bot_account(payload.account_id, bot)
     if trade.status != TradeStatus.PLANNED:
         # Account, instrument and direction decide what the linked fills mean;
         # once a trade is open they are history. Grading goes through /review.
@@ -392,14 +404,22 @@ def post_cancel_trade(
 
 
 @router.get("/trades/{trade_id}/suggest-fills", response_model=list[TransactionOut])
-def get_suggest_fills(trade_id: int, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def get_suggest_fills(
+    trade_id: int,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     return suggest_fills(session, trade)
 
 
 @router.post("/trades/{trade_id}/excursions", response_model=ExcursionsOut)
-def post_trade_excursions(trade_id: int, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def post_trade_excursions(
+    trade_id: int,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     if trade.opened_ts is None:
         raise HTTPException(status_code=409, detail="trade has not been opened")
     instrument = session.get(Instrument, trade.instrument_id)
@@ -419,8 +439,13 @@ def post_trade_excursions(trade_id: int, session: Session = Depends(get_session)
 
 
 @router.get("/trades/{trade_id}/chart", response_model=ChartOut)
-def get_trade_chart(trade_id: int, padding_days: int = 20, session: Session = Depends(get_session)):
-    trade = _get_trade_or_404(session, trade_id)
+def get_trade_chart(
+    trade_id: int,
+    padding_days: int = 20,
+    session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
+):
+    trade = _get_trade_or_404(session, trade_id, bot)
     if trade.opened_ts is None:
         raise HTTPException(status_code=409, detail="trade has not been opened")
     instrument = get_instrument_or_404(session, trade.instrument_id)
@@ -471,8 +496,9 @@ async def upload_screenshots(
     trade_id: int,
     files: Annotated[list[UploadFile], File()],
     session: Session = Depends(get_session),
+    bot: Bot | None = Depends(bot_auth),
 ):
-    trade = _get_trade_or_404(session, trade_id)
+    trade = _get_trade_or_404(session, trade_id, bot)
     data_dir = Path(get_settings().DATA_DIR)
     stored = json.loads(trade.screenshots)
     for upload in files:

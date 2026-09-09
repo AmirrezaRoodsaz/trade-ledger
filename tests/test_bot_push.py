@@ -449,3 +449,57 @@ def test_a_bot_cannot_touch_another_bots_trade(client, bot_factory, instrument_f
     opened = client.post(f"/api/trades/{trade['id']}/open", json=fills)
     assert opened.status_code == 200, opened.text
     assert opened.json()["status"] == TradeStatus.OPEN
+
+
+def test_a_bot_cannot_read_or_attach_to_another_bots_trade(
+    client, bot_factory, instrument_factory
+):
+    one, one_token = bot_factory(name="one")
+    _, two_token = bot_factory(name="two")
+    trade = client.post(
+        "/api/trades",
+        json=_plan_payload(one.account_id, instrument_factory().id),
+        headers=_auth(one_token),
+    ).json()
+
+    read = client.get(f"/api/trades/{trade['id']}", headers=_auth(two_token))
+    assert read.status_code == 403
+    write = client.post(
+        f"/api/trades/{trade['id']}/screenshots",
+        files={"files": ("shot.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        headers=_auth(two_token),
+    )
+    assert write.status_code == 403
+    # The local UI still sees it.
+    assert client.get(f"/api/trades/{trade['id']}").status_code == 200
+
+
+def test_a_bot_cannot_edit_its_trade_into_a_foreign_account(
+    client, bot_factory, account_factory, instrument_factory
+):
+    bot, token = bot_factory()
+    instrument = instrument_factory()
+    trade = client.post(
+        "/api/trades", json=_plan_payload(bot.account_id, instrument.id), headers=_auth(token)
+    ).json()
+
+    payload = _plan_payload(account_factory().id, instrument.id)
+    foreign = client.put(f"/api/trades/{trade['id']}", json=payload, headers=_auth(token))
+    assert foreign.status_code == 403
+
+    payload["account_id"] = bot.account_id
+    own = client.put(f"/api/trades/{trade['id']}", json=payload, headers=_auth(token))
+    assert own.status_code == 200, own.text
+
+
+def test_an_unreadable_stage_capital_setting_is_a_clear_500(
+    client, session, bot_factory, account_factory
+):
+    account = account_factory(mode=Mode.LIVE)
+    session.add(Setting(key="stage_capital_live", value="zweihundert"))
+    bot, token = bot_factory(account_id=account.id)
+    session.flush()
+
+    resp = client.get(f"/api/bots/{bot.slug}/config", headers=_auth(token))
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "invalid stage_capital setting: stage_capital_live"
