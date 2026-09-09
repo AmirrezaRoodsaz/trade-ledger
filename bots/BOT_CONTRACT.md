@@ -536,6 +536,14 @@ What the bot must do itself, because the app cannot reach the exchange:
      close would sell), then push and fail the run.
    Either way state goes up, because K4 reads `reconciliation` and a halt
    that pushes nothing leaves the operator with no alert at all.
+
+   **A pending `flat` command is carried out first, under either policy.**
+   The operator usually pressed the button *because* of the mismatch, and a
+   halt would leave the command undeliverable and the position open. So:
+   cancel and close every symbol, ack the command `ok`, close the bot's open
+   journal trades at the flatten's fill, push state — and *still* finish the
+   run as `error` with the mismatch detail. Flat is the safe state; the run
+   is a failure regardless.
 5. **After a commanded `flat`, end the run.** The positions the strategy
    would trade on no longer exist; an exit order against one of them would
    open a naked short.
@@ -550,7 +558,7 @@ process listing.
 
 | Variable | Meaning |
 |---|---|
-| `TRADE_LEDGER_URL` | where the app answers (default `http://127.0.0.1:8000`). Over the network this must be TLS — the token travels on every request |
+| `TRADE_LEDGER_URL` | where the app answers (default `http://HOST:PORT` from the app's `.env`, i.e. `http://127.0.0.1:8642`). A `local` bot never needs it: the supervisor sets it from the port the app was actually started with. Over the network this must be TLS — the token travels on every request |
 | `BOT_TOKEN` | the bot's token, shown once when the bot was created or rotated. Missing → exit 1 without running |
 | `EXCHANGE_ID` | ccxt id, e.g. `okx`. `fake` is a flat synthetic market for smoke tests and is refused without `--dry-run` |
 | `EXCHANGE_KEY`, `EXCHANGE_SECRET`, `EXCHANGE_PASSPHRASE` | venue credentials: read + trade, **no withdrawal**, IP-restricted |

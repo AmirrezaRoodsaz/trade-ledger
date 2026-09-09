@@ -272,6 +272,35 @@ def test_a_reconciliation_mismatch_flattens_and_fails_the_run(
     assert _state(session, bot).reconciliation == "mismatch"
 
 
+def test_a_pending_flat_is_carried_out_even_during_a_mismatch(
+    client, session, bot_factory, instrument_factory
+):
+    """The operator usually pressed the button *because* the books disagree.
+    Halting would leave the command undeliverable and the position open, so
+    the flat goes through — and the run still fails on the mismatch."""
+    btc = instrument_factory(symbol="BTC/EUR")
+    bot, token = _bot_with_preset(session, bot_factory, ["BTC/EUR"])  # halt, the default
+    held = _seed_open_trade(session, bot, btc, Decimal(2))
+    session.add(BotCommand(bot_id=bot.id, kind="flat", reason="books are wrong", issued_by="ui"))
+    session.commit()
+    # The journal says two coins, the venue says none: a mismatch under `halt`.
+    exchange = FakeExchange({"BTC/EUR": bars(20)}, balances={"EUR": Decimal(2500)})
+
+    with pytest.raises(ReconciliationError, match="journal 2, exchange 0"):
+        run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    assert [w[0] for w in exchange.writes] == ["cancel_all", "close_position"]
+    command = session.query(BotCommand).one()
+    assert command.result == "ok"
+    assert "reconciliation mismatch" in command.result_detail
+    session.refresh(held)
+    assert held.status == "closed"
+    run = _last_run(session, bot)
+    assert run.status == "error"
+    assert "BTC/EUR" in run.error
+    assert _state(session, bot).reconciliation == "mismatch"
+
+
 def test_a_mismatch_under_the_halt_policy_touches_nothing(
     client, session, bot_factory, instrument_factory
 ):

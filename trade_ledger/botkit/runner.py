@@ -72,6 +72,17 @@ def _stderr(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _log_text(events: list[dict]) -> str | None:
+    """The run's own events as plain text, for `finish_run`'s `log`.
+
+    A `remote` bot has no supervisor capturing its stdout, so this is the only
+    log the app ever gets for it. `None` for a run that said nothing, which
+    stores no log rather than an empty one.
+    """
+    lines = [f"{one['kind']}: {one['message']}" for one in events]
+    return "\n".join(lines) or None
+
+
 def _safe(what: str, fn, *args, **kwargs):
     """A call made *after* the venue was touched. The exchange already has
     the position; losing the journal entry is bad but re-sending the order is
@@ -286,11 +297,12 @@ def run_once(client, exchange, *, dry_run: bool = False, now: datetime | None = 
             "error",
             summary,
             error=f"{type(exc).__name__}: {exc}",
+            log=_log_text(events),
         )
         raise
 
     client.push_events(events)
-    client.finish_run(run_id, summary["status"], summary)
+    client.finish_run(run_id, summary["status"], summary, log=_log_text(events))
     return summary
 
 
@@ -318,10 +330,26 @@ def _trade(client, exchange, config, dry_run: bool, now, events: list, summary: 
         policy = str(params.get("on_mismatch", "halt"))
         summary["on_mismatch"] = policy
         events.append(_event("reconcile", f"mismatch: {detail}", policy=policy))
-        if policy == "flat" and not dry_run:
-            summary["flattened"] = len(
-                _flatten(exchange, sorted(set(booked) | set(live)), events, summary)
-            )
+        # A pending `flat` is the operator saying "close it, now" — very often
+        # *because* of this mismatch. Halting on it would leave the command
+        # undeliverable and the position open until somebody squares the books
+        # by hand, which is the wrong way round: flat is the safe state.
+        pending_flat = next((one for one in config["commands"] if one["kind"] == "flat"), None)
+        if (policy == "flat" or pending_flat is not None) and not dry_run:
+            flattened = _flatten(exchange, sorted(set(booked) | set(live)), events, summary)
+            summary["flattened"] = len(flattened)
+            if pending_flat is not None:
+                summary["flattened_by_command"] = True
+                _safe(
+                    "ack the flat carried out during a mismatch",
+                    client.ack_command,
+                    pending_flat["id"],
+                    "ok",
+                    f"flattened {len(flattened)} symbol(s) during a reconciliation mismatch",
+                )
+                _close_journal(
+                    client, exchange, preset, open_trades, flattened, now, events, summary
+                )
         # State goes up on either policy: the app's K4 kill rule reads
         # `BotState.reconciliation`, and a halt that pushes nothing leaves
         # the operator with no alert at all.
