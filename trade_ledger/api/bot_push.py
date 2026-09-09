@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -25,9 +25,10 @@ from sqlalchemy.orm import Session
 
 from ..bots import commands
 from ..bots.auth import bot_auth
+from ..bots.capital import stage_capital_eur
 from ..db import get_session
-from ..enums import EventKind, Mode, RunStatus
-from ..models import Bot, BotCommand, BotEvent, BotRun, BotState, Preset, PresetVersion, Setting
+from ..enums import EventKind, RunStatus
+from ..models import Bot, BotCommand, BotEvent, BotRun, BotState, Preset, PresetVersion
 from ..settings import get_settings
 from ._common import get_account_or_404
 from .schemas import BaseModel, Money, UTCDatetime
@@ -37,13 +38,6 @@ router = APIRouter()
 # One call carries one run's worth of events. Above this a bot is looping,
 # and the app should say so rather than swallow the flood.
 MAX_EVENTS = 500
-
-STAGE_CAPITAL_DEFAULTS = {
-    Mode.PAPER: Decimal(2500),
-    Mode.DEMO: Decimal(2500),
-    Mode.LIVE: Decimal(250),
-}
-
 
 def bot_for_slug(slug: str, bot: Bot | None = Depends(bot_auth)) -> Bot:
     """The authenticated bot, which must be the one named in the path."""
@@ -311,21 +305,6 @@ def push_events(
     )
     session.commit()
     return EventsOut(inserted=len(payload))
-
-
-def stage_capital_eur(session: Session, bot: Bot, mode: str) -> Decimal:
-    """Bot override, else the per-mode Setting, else the ladder's default."""
-    if bot.stage_capital_eur is not None:
-        return bot.stage_capital_eur
-    setting = session.get(Setting, f"stage_capital_{mode}")
-    if setting is not None:
-        try:
-            return Decimal(setting.value)
-        except InvalidOperation as exc:
-            raise HTTPException(
-                status_code=500, detail=f"invalid stage_capital setting: {setting.key}"
-            ) from exc
-    return STAGE_CAPITAL_DEFAULTS[mode]
 
 
 @router.get("/bots/{slug}/config", response_model=ConfigOut)

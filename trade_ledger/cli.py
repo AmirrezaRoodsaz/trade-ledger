@@ -38,7 +38,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         # blocks, and one second is long enough for the socket to be up.
         threading.Timer(1.0, webbrowser.open, [url]).start()
     print(f"trade-ledger on {url}")
-    uvicorn.run(create_app(), host=settings.HOST, port=port)
+    uvicorn.run(create_app(background=True), host=settings.HOST, port=port)
     return 0
 
 

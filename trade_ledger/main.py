@@ -1,10 +1,16 @@
 """FastAPI app factory: the API under `/api`, uploaded screenshots under
 `/screenshots`, and the built frontend (`frontend/dist`) at `/` with an SPA
 fallback so a hard reload of `/journal` still lands on `index.html`.
+
+`background=True` also runs the bot monitor for as long as the app lives.
+It defaults to off so a test client — or any script that just wants the
+routes — never starts a task that writes to the database behind its back.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -12,6 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import ROUTERS
+from .bots import monitor
 from .db import init_db
 from .settings import get_settings
 
@@ -19,9 +26,21 @@ _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _BUILD_HINT = "frontend not built: cd frontend && npm ci && npm run build"
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+@contextlib.asynccontextmanager
+async def _background(app: FastAPI):
+    """Start the monitor loop with the app and cancel it on shutdown."""
+    task = asyncio.create_task(monitor.loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+def create_app(db_path: str | None = None, *, background: bool = False) -> FastAPI:
     init_db(db_path)
-    app = FastAPI(title="trade-ledger")
+    app = FastAPI(title="trade-ledger", lifespan=_background if background else None)
     for router in ROUTERS:
         app.include_router(router, prefix="/api")
 
