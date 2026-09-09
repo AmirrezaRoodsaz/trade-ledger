@@ -1,5 +1,14 @@
 # Running a bot
 
+**Writing a new bot: give [`bots/BOT_CONTRACT.md`](BOT_CONTRACT.md) to whoever
+writes it.** It is self-contained — the loop in order, every endpoint with its
+JSON, the strategy signature, the env vars, the kill rules a bot honours
+locally, and the acceptance tests it has to pass. `trade-bot new <name>`
+scaffolds a strategy module from `bots/template/strategy_template.py` and an
+env file from `bots/template/bot.env.example`.
+
+This file is the operator's side: how to create a bot, run it, and schedule it.
+
 A bot is a separate process. It reads its config from the app, pushes what it
 did back to the app, and is the only thing in this repo allowed to talk to an
 exchange. The app never places an order.
