@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import ROUTERS
-from .bots import monitor, supervisor
+from .bots import alerts, monitor, supervisor, telegram
 from .db import init_db
 from .settings import get_settings
 
@@ -27,16 +27,30 @@ _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _BUILD_HINT = "frontend not built: cd frontend && npm ci && npm run build"
 
 
+def _telegram_configured() -> bool:
+    settings = get_settings()
+    return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
+
+
 @contextlib.asynccontextmanager
 async def _background(app: FastAPI):
-    """Start the monitor and supervisor loops with the app, stop them with it.
+    """Start the monitor and supervisor loops with the app, plus the Telegram
+    poller when Telegram is configured, and cancel them all on shutdown.
 
     The supervisor's launch hook lives here too: only a process that is
     actually running the supervisor may promise that a `run_now` starts
-    something.
+    something. Likewise the Telegram `notify` registration happens here, not
+    at module import, so a plain `pytest` run with real keys in `.env` never
+    wires up a notifier that would send real alerts. `NOTIFIERS` is a
+    module-level list shared by every app instance, so the append is
+    idempotent.
     """
     supervisor.register_hook()
     tasks = [asyncio.create_task(monitor.loop()), asyncio.create_task(supervisor.loop())]
+    if _telegram_configured():
+        if telegram.notify not in alerts.NOTIFIERS:
+            alerts.NOTIFIERS.append(telegram.notify)
+        tasks.append(asyncio.create_task(telegram.loop()))
     try:
         yield
     finally:

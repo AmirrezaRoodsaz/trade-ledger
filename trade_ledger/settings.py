@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     HOST: str = "127.0.0.1"
     PORT: int = 8642
 
+    # Bot Center outbound/inbound Telegram. Both must be set for the inbound
+    # poller to run; `send()` degrades to a no-op when either is missing.
+    TELEGRAM_BOT_TOKEN: str | None = None
+    TELEGRAM_CHAT_ID: str | None = None
+
     @field_validator("DB_PATH", "DATA_DIR")
     @classmethod
     def _under_repo_root(cls, value: str) -> str:
