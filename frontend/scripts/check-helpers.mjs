@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { composeNotePre, plannedQty } from "../src/api/trades.ts";
+import { composeNotePre, cumRCurve, plannedQty } from "../src/api/trades.ts";
 import { DASH, ago } from "../src/fmt.ts";
 
 // risk / |entry - stop|, whichever side the stop is on
@@ -40,5 +40,21 @@ assert.equal(ago("2026-09-07T12:00:00Z", now), "2 d ago");
 assert.equal(ago("2026-09-09T15:00:00Z", now), "in 3 h");
 assert.equal(ago(null, now), DASH);
 assert.equal(ago("not a date", now), DASH);
+
+// Journal curve behind a bot's equity overlay: closed trades only, in close
+// order, summed in R.
+assert.deepEqual(
+  cumRCurve([
+    { closed_ts: "2026-03-02T10:00:00Z", r_multiple: "-1" },
+    { closed_ts: "2026-01-05T09:00:00Z", r_multiple: "2.5" },
+    { closed_ts: null, r_multiple: "9" },
+    { closed_ts: "2026-04-01T09:00:00Z", r_multiple: null },
+  ]),
+  [
+    { date: "2026-01-05", cum_r: 2.5 },
+    { date: "2026-03-02", cum_r: 1.5 },
+  ],
+);
+assert.deepEqual(cumRCurve([]), []);
 
 console.log("check-helpers: ok");

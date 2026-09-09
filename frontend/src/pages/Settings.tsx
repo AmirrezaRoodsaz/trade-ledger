@@ -26,7 +26,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/Layout";
 import { ModeBadge } from "../components/ModeBadge";
 import { MoneyCell } from "../components/MoneyCell";
-import { DASH, dateTime, num } from "../fmt";
+import { DASH, dateTime, num, toNumber } from "../fmt";
 
 const STAGE_CAPITAL_PAPER = "stage_capital_paper";
 const STAGE_CAPITAL_LIVE = "stage_capital_live";
@@ -769,6 +769,109 @@ function AppSettingsSection() {
   );
 }
 
+// --- bot readiness and backtest criteria -----------------------------------
+
+/** Key, label and the backend's own default — shown as the placeholder, so a
+ * blank field reads as "the default applies" rather than as zero. Kept in the
+ * order of `bots/backtests.py` and `bots/readiness.py`.
+ */
+const BOT_CRITERIA: { key: string; label: string; placeholder: string }[] = [
+  { key: "bt_min_trades", label: "Backtest: min trades", placeholder: "40" },
+  { key: "bt_min_expectancy", label: "Backtest: min expectancy R", placeholder: "0" },
+  { key: "bt_min_profit_factor", label: "Backtest: min profit factor", placeholder: "1.3" },
+  { key: "bt_max_drawdown_pct", label: "Backtest: max drawdown %", placeholder: "30" },
+];
+
+const READINESS_WEIGHTS: { key: string; label: string; placeholder: string }[] = [
+  { key: "readiness_w_backtest", label: "Weight backtest %", placeholder: "25" },
+  { key: "readiness_w_drills", label: "Weight drills %", placeholder: "15" },
+  { key: "readiness_w_incubation", label: "Weight incubation %", placeholder: "30" },
+  { key: "readiness_w_live", label: "Weight real money %", placeholder: "30" },
+  { key: "readiness_demo_trades", label: "Demo trades for full progress", placeholder: "30" },
+  { key: "readiness_live_trades", label: "Live trades for full progress", placeholder: "50" },
+];
+
+const BENCHMARK_KEY = "bt_require_beat_benchmark";
+
+function BotCriteriaSection() {
+  const settings = useApi(() => get<Setting[]>("/settings"));
+  const [values, setValues] = useState<Record<string, string>>({});
+  const save = useAction();
+
+  useEffect(() => {
+    if (settings.data === null) return;
+    setValues(Object.fromEntries(settings.data.map((item) => [item.key, item.value])));
+  }, [settings.data]);
+
+  const field = (key: string) => values[key] ?? "";
+  const setField = (key: string, value: string) =>
+    setValues((previous) => ({ ...previous, [key]: value }));
+
+  const all = [...BOT_CRITERIA, ...READINESS_WEIGHTS];
+  const weightSum = READINESS_WEIGHTS.slice(0, 4).reduce(
+    (total, item) => total + (toNumber(field(item.key) || item.placeholder) ?? 0),
+    0,
+  );
+
+  return (
+    <Card title="Bot readiness & backtest criteria">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {all.map((item) => (
+          <Field key={item.key} label={item.label}>
+            <input
+              className="field"
+              inputMode="decimal"
+              placeholder={item.placeholder}
+              value={field(item.key)}
+              onChange={(event) => setField(item.key, event.target.value)}
+            />
+          </Field>
+        ))}
+        <Field label="Backtest must beat the benchmark">
+          <select
+            className="field"
+            value={field(BENCHMARK_KEY) || "true"}
+            onChange={(event) => setField(BENCHMARK_KEY, event.target.value)}
+          >
+            <option value="true">yes</option>
+            <option value="false">no</option>
+          </select>
+        </Field>
+      </div>
+
+      <p className="mt-3 text-[11px] text-muted">
+        Blank means the default in the placeholder. The four weights add up to {num(weightSum, 0)} %
+        {weightSum !== 100 && " — readiness can never reach 100 % unless they sum to that"}. Changing
+        a criterion re-judges nothing: a stored backtest keeps the verdict it was given, re-upload it
+        to judge it again.
+      </p>
+
+      <div className="mt-4">
+        <button
+          className="btn-accent"
+          disabled={save.busy}
+          onClick={() =>
+            void save.run(async () => {
+              await put<Setting[]>("/settings", [
+                ...all
+                  .filter((item) => field(item.key).trim() !== "")
+                  .map((item) => ({ key: item.key, value: field(item.key).trim() })),
+                { key: BENCHMARK_KEY, value: field(BENCHMARK_KEY) || "true" },
+              ]);
+              settings.reload();
+            })
+          }
+        >
+          Save criteria
+        </button>
+      </div>
+
+      <Err message={settings.error} />
+      <Err message={save.error} />
+    </Card>
+  );
+}
+
 // --- Telegram --------------------------------------------------------------
 
 const TELEGRAM_KEYS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"];
@@ -856,6 +959,7 @@ export function Settings() {
         <PlaybooksSection />
         <TagsSection />
         <AppSettingsSection />
+        <BotCriteriaSection />
         <TelegramSection />
       </div>
     </>

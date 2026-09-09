@@ -142,3 +142,21 @@ export function composeNotePre(
     .join("\n\n");
   return text === "" ? null : text;
 }
+
+/** Cumulative R over closed trades, oldest close first — the journal curve a
+ * bot's equity overlay draws against its backtest. `/api/analytics/equity`
+ * cannot filter by bot, so the curve is summed here from the bot's trades.
+ * A trade without a close date or without an R value carries no point.
+ */
+export function cumRCurve(
+  trades: { closed_ts: string | null; r_multiple: string | null }[],
+): { date: string; cum_r: number }[] {
+  const closed = trades
+    .filter((trade) => trade.closed_ts !== null && toNumber(trade.r_multiple) !== null)
+    .sort((a, b) => (a.closed_ts ?? "").localeCompare(b.closed_ts ?? ""));
+  let cum = 0;
+  return closed.map((trade) => {
+    cum += toNumber(trade.r_multiple) ?? 0;
+    return { date: (trade.closed_ts ?? "").slice(0, 10), cum_r: Number(cum.toFixed(4)) };
+  });
+}
