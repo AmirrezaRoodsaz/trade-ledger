@@ -1,0 +1,24 @@
+[Unit]
+Description=trade-ledger bot %i, one run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trade-ledger
+WorkingDirectory=/opt/trade-ledger
+# Holds BOT_TOKEN and the exchange keys. chmod 600, owned by the service user.
+EnvironmentFile=/etc/trade-bot/%i.env
+ExecStart=/opt/trade-ledger/.venv/bin/trade-bot --bot %i --once
+
+# The run is a few seconds of HTTP; anything longer is a hung venue call.
+TimeoutStartSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/trade-ledger/data
+
+[Install]
+WantedBy=multi-user.target

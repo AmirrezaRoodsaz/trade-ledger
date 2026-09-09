@@ -205,6 +205,7 @@ def list_trades(
     date_from: UTCDatetime | None = None,
     date_to: UTCDatetime | None = None,
     bot_id: int | None = None,
+    external_ref: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1),
     session: Session = Depends(get_session),
@@ -228,6 +229,10 @@ def list_trades(
         stmt = stmt.where(Trade.status == status)
     if bot_id is not None:
         stmt = stmt.where(Trade.bot_id == bot_id)
+    if external_ref is not None:
+        # Exact match: the journal id is unique per trade, and a bot looks a
+        # ref up to find out whether it already filed this intent.
+        stmt = stmt.where(Trade.external_ref == external_ref)
 
     total = session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (

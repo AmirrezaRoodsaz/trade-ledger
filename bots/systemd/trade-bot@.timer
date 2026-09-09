@@ -1,0 +1,15 @@
+[Unit]
+Description=trade-ledger bot %i, every 4 hours
+
+[Timer]
+# Five minutes after each 4-hour bar closes, so the bar the strategy reads is
+# a closed one. UTC, because the bars are.
+OnCalendar=*-*-* 00,04,08,12,16,20:05:00 UTC
+# A machine that was asleep at :05 still runs, once, on wake.
+Persistent=true
+# Keeps a fleet from hitting the venue's rate limit in the same second.
+RandomizedDelaySec=30
+Unit=trade-bot@%i.service
+
+[Install]
+WantedBy=timers.target
