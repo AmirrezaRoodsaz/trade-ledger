@@ -44,30 +44,32 @@ decides when. `run_once()` in `botkit/runner.py` is this list.
 | 2 | Heartbeat | `POST /api/bots/{slug}/heartbeat` |
 | 3 | Start the run | `POST /api/bots/{slug}/runs` → `run_id` |
 | 4 | `enabled == false`? finish `skipped`, touch nothing | `PATCH …/runs/{run_id}` |
-| 5 | Read the journal side | `GET /api/instruments`, `GET /api/trades?status=open&mode=all` |
-| 6 | Read the venue side | `balances()` (spot) or `positions()` (swap), `market_limits(symbol)` |
-| 7 | Reconcile the two | local comparison, 1 % relative tolerance per symbol |
-| 8 | Mismatch → apply `on_mismatch`, push state + events, stop the run | `POST …/state`, `POST …/events` |
-| 9 | Acknowledge pending commands, oldest first | `POST …/commands/{id}/ack` |
-| 10 | `flat` command → cancel + close everything, close the journal trades, push state, end the run | `cancel_all()`, `close_position()`, `POST /api/trades/{id}/close` |
-| 11 | Fetch completed candles per pair | `candles(symbol, timeframe, bars + 10)` |
-| 12 | Compute signals | `signals(candles, params, open_positions)` — pure, local |
-| 13 | **Exits before entries** | `cancel_all()`, `place_order(sell)`, `POST /api/trades/{id}/close` |
-| 14 | Sizing base | `balances()` → EUR balance, else `stage_capital_eur` from the config |
-| 15 | Per entry: size, feasibility, then the intent | `GET /api/trades?external_ref=…`, `POST /api/trades` |
-| 16 | Entry order, carrying the plan's ref as `clientOrderId` | `place_order(buy, …, external_ref)` |
-| 17 | Resting stop, **before** the journal is updated | `place_stop(…, external_ref)` |
-| 18 | Record the fill | `POST /api/trades/{id}/open` |
-| 19 | Push state read fresh from the venue | `POST …/state` |
-| 20 | Push events, finish the run | `POST …/events`, `PATCH …/runs/{run_id}` |
+| 5 | `preset == null`? file a warning event, finish `skipped` | `PATCH …/runs/{run_id}` |
+| 6 | Venue limits per pair (min size, lot step, tick) | `market_limits(symbol)` |
+| 7 | Read the journal side | `GET /api/instruments`, `GET /api/trades?status=open&mode=all` |
+| 8 | Read the venue side | `balances()` (spot) or `positions()` (swap) |
+| 9 | Reconcile the two | local comparison, 1 % relative tolerance per symbol |
+| 10 | Mismatch → apply `on_mismatch`, push state + events, fail the run | `POST …/state`, `POST …/events` |
+| 11 | Acknowledge pending commands, oldest first | `POST …/commands/{id}/ack` |
+| 12 | `flat` command → cancel + close everything, close the journal trades, push state, end the run | `cancel_all()`, `close_position()`, `POST /api/trades/{id}/close` |
+| 13 | Fetch completed candles per pair | `candles(symbol, timeframe, bars + 10)` |
+| 14 | Compute signals | `signals(candles, params, open_positions)` — pure, local |
+| 15 | **Exits before entries** | `cancel_all()`, `place_order(sell, …, exit ref)`, `POST /api/trades/{id}/close` |
+| 16 | Sizing base | `balances()` → EUR balance, else `stage_capital_eur` from the config |
+| 17 | Per entry: size, feasibility, then the intent | `GET /api/trades?external_ref=…`, `POST /api/trades` |
+| 18 | Entry order, carrying the plan's ref as `clientOrderId` | `place_order(buy, …, external_ref)` |
+| 19 | Resting stop, **before** the journal is updated. Its own id: `external_ref[:29] + "sl"` | `place_stop(…, external_ref)` |
+| 20 | Record the fill | `POST /api/trades/{id}/open` |
+| 21 | Push state read fresh from the venue | `POST …/state` |
+| 22 | Push events, finish the run | `POST …/events`, `PATCH …/runs/{run_id}` |
 
-Step 4 and steps 8, 10 are the three early exits. Every one of them still
+Steps 4, 5, 10 and 12 are the four early exits. Every one of them still
 finishes the run — a run left `running` is a run the operator has to guess
 about.
 
 **After an order has reached the venue, an app call that fails is logged and
 the run carries on.** It is never a reason to re-send. What the app misses,
-step 7 of the next run finds.
+the next run's reconciliation finds.
 
 ---
 
@@ -162,7 +164,7 @@ Response: `{"ok": true}`.
      "unrealised_quote": "12.40"}
   ],
   "open_orders": [
-    {"id": "12345", "clientOrderId": "okxdonchi9f2a1b3c4d5esl",
+    {"id": "12345", "clientOrderId": "okxdonchian49f2a1b3c4d5esl",
      "symbol": "BTC/EUR", "type": "stop", "side": "sell", "amount": "0.0031"}
   ],
   "reconciliation": "ok",
@@ -186,6 +188,15 @@ pass straight through as JSON; the only field the app reads out of them is
 One state row per bot, overwritten. `peak_equity_eur` only ever grows — the
 drawdown kill rule measures against it. A push re-evaluates K1 and K4
 immediately.
+
+**Send `equity_eur` only when it is real equity in EUR.** The reference runner
+sends `null` unless every configured pair settles in EUR and the venue
+reported an EUR balance; on a USDT-quoted pair it has no FX rate (that lives
+in the app) and would otherwise be pushing USDT as if it were EUR. The honest
+`null` has a price: **kill rule K1 is inert without an equity number** — no
+capital floor, no drawdown check. If you want K1 covering a bot, give it an
+EUR-quoted account. `extra.sizing_base_eur` and `extra.sizing_base_source` say
+what the run actually sized against either way.
 
 ### 3.5 Push events
 
@@ -242,6 +253,14 @@ Response: `201 {"inserted": 2}`.
 and must finish the run as `skipped`. `commands` are the ones not yet
 acknowledged, oldest first.
 
+`risk_pct` and `max_position_pct` may be `null`, and they do not mean the same
+thing when they are. The reference runner reads `risk_pct or 0` — a null risk
+sizes every entry to zero, which fails the feasibility check, so **no preset
+risk means no entries**, not unlimited ones. A null (or zero)
+`max_position_pct` means *no position cap*, because a preset that leaves the
+field empty must still be tradable. `leverage_cap` is read as
+`leverage_cap or 1`.
+
 ### 3.7 Acknowledge a command
 
 `POST /api/bots/{slug}/commands/41/ack`
@@ -277,7 +296,7 @@ account (403 otherwise) and its own trades (403 otherwise).
   "risk_eur": "8.99",
   "planned_qty": "0.0031",
   "note_pre": "close 58000 above 55-bar high 57200, ATR(20) 1450 [EUR balance, risk 8.99 over a 2900 stop]",
-  "external_ref": "okxdonchi9f2a1b3c4d5e"
+  "external_ref": "okxdonchian49f2a1b3c4d5e"
 }
 ```
 
@@ -286,18 +305,25 @@ account (403 otherwise) and its own trades (403 otherwise).
 `GET /api/instruments` — the full list, matched on symbol **and** asset class
 by the caller — or from `POST /api/instruments` with
 `{"symbol", "asset_class", "quote_ccy", "price_source": "manual"}` when the
-app does not know the instrument yet.
+app does not know the instrument yet. `asset_class` follows the venue's market
+type: `crypto` on spot, `perp` on swap.
 
 ### 4.2 `external_ref` and idempotency
 
-The ref is derived, not random: `sha256(slug | symbol | bar timestamp)`,
-truncated to 24 alphanumeric characters (inside OKX's 32-character
-`clientOrderId` budget, the tightest of the venues). A second run over the
-same bar computes the same ref.
+The ref is derived, not random:
+
+```
+external_ref = non_alphanumerics_stripped(slug)[:12] + sha256(f"{slug}|{symbol}|{bar_ts.isoformat()}").hexdigest()[:12]
+```
+
+— 24 alphanumeric characters, inside OKX's 32-character `clientOrderId`
+budget, the tightest of the venues. For the bot `okx-donchian-4h` that is
+`okxdonchian4` plus twelve hex digits, e.g. `okxdonchian49f2a1b3c4d5e`. A
+second run over the same bar computes the same ref.
 
 Before planning, look it up:
 
-`GET /api/trades?mode=all&external_ref=okxdonchi9f2a1b3c4d5e&page_size=2`
+`GET /api/trades?mode=all&external_ref=okxdonchian49f2a1b3c4d5e&page_size=2`
 → `{"items": [...], "total": 1}`
 
 - no hit → plan it;
@@ -305,9 +331,18 @@ Before planning, look it up:
 - hit with any other status (`open`, `closed`, `cancelled`) → this bar's entry
   is settled. **Do not order again.**
 
-The exit order gets its own client id: the entry's ref truncated to 31
-characters plus `x`, because two live orders may not share one and the entry's
-ref is already spoken for by the entry and its stop.
+Two live orders may not share a client id, so the other two orders of a trade
+derive their own from the entry's ref — the shared prefix still ties them to
+the trade:
+
+| Order | `clientOrderId` | Example |
+|---|---|---|
+| entry | `external_ref` | `okxdonchian49f2a1b3c4d5e` |
+| resting stop | `external_ref[:29] + "sl"` | `okxdonchian49f2a1b3c4d5esl` |
+| exit (market) | `external_ref[:31] + "x"` | `okxdonchian49f2a1b3c4d5ex` |
+
+The `sl` suffix is also how the state push recognises a stop on a venue that
+reports no trigger price (section 7).
 
 ### 4.3 Open (the entry filled)
 
@@ -415,14 +450,20 @@ def default_params() -> dict: ...
 ```
 
 - `candles` — `{symbol: [Candle, …]}`, oldest first, **completed bars only**.
-  `Candle` is a frozen dataclass with `date` (aware datetime), `open`,
-  `high`, `low`, `close` — all `Decimal | None`. Skip bars with a `None` leg.
+  `Candle` (`trade_ledger/prices/service.py`) is a plain — *not* frozen —
+  dataclass: `date`, `open`, `high`, `low`, `close`, the four prices
+  `Decimal | None`. Skip bars with a `None` leg. The field is annotated
+  `date` because the app's price history is daily, but the exchange wrapper
+  puts an **aware `datetime`** in it, which is what a strategy on an intraday
+  timeframe reads. Treat every candle as read-only even though nothing stops
+  you writing to one.
 - `params` — the preset's params. Merge over your own defaults:
   `p = default_params() | params`.
 - `open_positions` — `{symbol: {"qty": Decimal}}` for the symbols the journal
   says are held. Membership is what matters; a symbol absent from the dict is
   flat.
-- Returns `Signal(symbol, side, entry, stop, reason)`, a frozen dataclass:
+- Returns `Signal(symbol, side, entry, stop, reason)`, a **frozen** dataclass
+  (so two runs over the same bar compare equal):
   `side` is `"buy"` (entry) or `"sell"` (exit); `entry` and `stop` are
   `Decimal` for a buy and `None` for a sell (the runner sizes an exit from
   what is actually held); `reason` is the human sentence that ends up in the
@@ -470,9 +511,14 @@ bot pushed. The bot's job is to report honestly and to obey what comes back.
 
 What the bot must do itself, because the app cannot reach the exchange:
 
-1. **Report `stop_present` truthfully** on every pushed position. K4 reads
-   exactly that field. A stop is recognised by its trigger price or by the
-   `sl` suffix on the client id.
+1. **Report `stop_present` truthfully** on every pushed position, always as a
+   boolean. K4 flags a position only when `stop_present is False`; a position
+   dict that omits the key, or sends `null`, silently switches the rule off
+   for that position — the one place where saying nothing is worse than
+   saying "no". A stop is recognised by its trigger price
+   (`stopLossPrice` / `triggerPrice` / `stopPrice` / `info.slTriggerPx`) or by
+   the `sl` suffix on the client id, which is why the stop carries
+   `external_ref[:29] + "sl"` (section 4.2).
 2. **Never leave a position without a stop.** Place the stop immediately
    after the entry fill, before updating the journal. **If the venue refuses
    the stop: close the position again on the spot and cancel the plan.** Flat
@@ -509,7 +555,15 @@ process listing.
 | `EXCHANGE_ID` | ccxt id, e.g. `okx`. `fake` is a flat synthetic market for smoke tests and is refused without `--dry-run` |
 | `EXCHANGE_KEY`, `EXCHANGE_SECRET`, `EXCHANGE_PASSPHRASE` | venue credentials: read + trade, **no withdrawal**, IP-restricted |
 | `EXCHANGE_DEMO` | `1` for the venue's demo/sandbox (default), `0` for real money |
-| `MARKET_TYPE` | `spot` or `swap`. Swap orders carry `tdMode=isolated` and the preset's leverage cap |
+| `MARKET_TYPE` | `spot` or `swap`. Swap orders carry `tdMode=isolated`; see the leverage note below |
+
+**Leverage.** On a swap the wrapper calls `set_leverage(min(cap, the market's
+own maximum))` once per symbol, but `trade-bot` builds the exchange from the
+environment alone and passes no cap, so the venue-side call is
+`set_leverage(1)`. The preset's `leverage_cap` is enforced where it actually
+binds — in **sizing**, as `qty ≤ leverage_cap × equity ÷ entry` — before the
+lot-step rounding. A bot that raises the venue's leverage itself is breaking
+this contract; the cap is a size limit, not a margin setting.
 
 Exit codes: `0` when the run finished `ok`, `dry_run` or `skipped`; `1` for
 anything else — an unreachable app, a reconciliation mismatch, a venue error.

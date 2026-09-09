@@ -28,10 +28,12 @@ pairs and finishes every run as `skipped`.
 
 ```bash
 mkdir -p data/bots/<slug>
-cp bots/example.env data/bots/<slug>/.env
+cp bots/template/bot.env.example data/bots/<slug>/.env
 chmod 600 data/bots/<slug>/.env
 $EDITOR data/bots/<slug>/.env      # BOT_TOKEN, exchange keys
 ```
+
+(`trade-bot new <name>` writes that file for you, already `chmod 600`.)
 
 `data/` is gitignored. Nothing else in the repo reads exchange keys — not the
 app, not the supervisor, which passes this file through to the child process

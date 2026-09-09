@@ -3,8 +3,9 @@
 `trade-bot new <name>` copies this file to `bots/strategies/<name>.py` and
 writes `data/bots/<name>/.env`. Move the finished module into
 `trade_ledger/botkit/strategies/` and register it there (see the bottom of
-this file): that package is what the runner imports, and the imports below
-become relative (`from ...prices.service import Candle`).
+this file): that package is what the runner imports, and the two imports below
+become relative — `from . import Signal` and
+`from ...prices.service import Candle`.
 
 The contract this implements is `bots/BOT_CONTRACT.md`, section 6.
 

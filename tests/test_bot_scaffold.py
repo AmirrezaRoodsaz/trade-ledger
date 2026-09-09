@@ -93,6 +93,18 @@ def test_the_contract_names_every_command_kind():
     assert not missing, f"BOT_CONTRACT.md does not document {missing}"
 
 
+def test_the_contract_states_the_client_id_derivations_the_code_uses():
+    """The rule the review caught missing: three orders, three ids. If either
+    derivation moves in the code, this says the document has to move too.
+    """
+    exchange = (REPO_ROOT / "trade_ledger" / "botkit" / "exchange.py").read_text()
+    runner = (REPO_ROOT / "trade_ledger" / "botkit" / "runner.py").read_text()
+    assert 'f"{client_id[:29]}sl"' in exchange, "the stop's id rule moved"
+    assert 'f"{entry_ref[:31]}x"' in runner, "the exit's id rule moved"
+    assert 'external_ref[:29] + "sl"' in CONTRACT
+    assert 'external_ref[:31] + "x"' in CONTRACT
+
+
 def test_the_template_self_check_runs_clean(capsys):
     runpy.run_path(
         str(REPO_ROOT / "bots" / "template" / "strategy_template.py"), run_name="__main__"
