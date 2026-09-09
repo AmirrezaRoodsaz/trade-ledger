@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 trade-ledger = "trade_ledger.cli:main"
+trade-bot = "trade_ledger.botkit.run:main"
 
 [dependency-groups]
 dev = [

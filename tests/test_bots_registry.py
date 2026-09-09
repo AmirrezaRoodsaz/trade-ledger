@@ -238,7 +238,8 @@ def test_migration_adds_bot_id_to_an_older_trades_table(tmp_path):
     with sqlite3.connect(path) as conn:
         conn.execute(
             "CREATE TABLE trades (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL,"
-            " instrument_id INTEGER NOT NULL, direction VARCHAR NOT NULL, status VARCHAR)"
+            " instrument_id INTEGER NOT NULL, direction VARCHAR NOT NULL, status VARCHAR,"
+            " external_ref VARCHAR)"
         )
         assert "bot_id" not in {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
 
@@ -246,6 +247,10 @@ def test_migration_adds_bot_id_to_an_older_trades_table(tmp_path):
 
     with db.engine.begin() as conn:
         assert "bot_id" in _trade_columns(conn)
+        # The index a fresh database gets from `Trade.__table_args__`, added
+        # to a file that predates it: one journal ref per bot.
+        indexes = {row[1] for row in conn.exec_driver_sql("PRAGMA index_list(trades)")}
+        assert "uq_trades_bot_ref" in indexes
     with db.SessionLocal() as session:
         assert session.get(Setting, "schema_version").value == "2"
 

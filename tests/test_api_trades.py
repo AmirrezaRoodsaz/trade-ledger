@@ -295,3 +295,16 @@ def test_trades_filter_by_playbook(client, account_factory, instrument_factory):
 
     assert client.get("/api/trades", params={"playbook_id": playbook["id"]}).json()["total"] == 1
     assert client.get("/api/trades", params={"playbook_id": 999}).json()["total"] == 0
+
+
+def test_trades_can_be_looked_up_by_external_ref(client, account_factory, instrument_factory):
+    """Exact match: a bot asks whether it has already filed this intent."""
+    account, instrument = account_factory(), instrument_factory()
+    first = _plan(client, account, instrument).json()
+    _plan(client, account, instrument)
+
+    page = client.get("/api/trades", params={"external_ref": first["external_ref"]}).json()
+    assert [t["id"] for t in page["items"]] == [first["id"]]
+    assert page["total"] == 1
+
+    assert client.get("/api/trades", params={"external_ref": "T-999"}).json()["items"] == []

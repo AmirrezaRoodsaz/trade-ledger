@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -141,3 +143,58 @@ def test_relative_db_and_data_paths_resolve_against_the_repo_root(monkeypatch):
 
     monkeypatch.setenv("DB_PATH", "/tmp/other.db")
     assert settings.Settings().DB_PATH == "/tmp/other.db"
+
+
+def test_one_journal_ref_per_bot(session, account_factory, instrument_factory, bot_factory):
+    """The runner derives its ref from bot, symbol and bar, so a re-run of the
+    same bar must find the plan it filed rather than file a second one. The
+    index is what makes that a guarantee.
+    """
+    account, instrument = account_factory(), instrument_factory()
+    bot, _ = bot_factory()
+    fields = {
+        "account_id": account.id,
+        "instrument_id": instrument.id,
+        "direction": Direction.LONG,
+        "external_ref": "bot0000000001",
+    }
+    session.add(Trade(**fields, bot_id=bot.id))
+    session.commit()
+
+    session.add(Trade(**fields, bot_id=bot.id))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    # A hand-entered trade has no bot, and SQLite counts NULLs as distinct —
+    # the manual journal is untouched by the index.
+    session.add(Trade(**{**fields, "external_ref": "T-001"}))
+    session.add(Trade(**{**fields, "external_ref": "T-001"}))
+    session.commit()
+
+
+def test_a_database_with_a_duplicate_journal_ref_still_opens(tmp_path, caplog):
+    """The index is a guarantee for new data, never a reason to refuse an
+    existing file. SQLite rejects the index with `IntegrityError` when rows
+    already collide — `init_db` warns and carries on without it.
+    """
+    path = tmp_path / "ledger.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE trades (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL,"
+            " instrument_id INTEGER NOT NULL, direction VARCHAR NOT NULL, status VARCHAR,"
+            " external_ref VARCHAR, bot_id INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO trades (account_id, instrument_id, direction, external_ref, bot_id)"
+            " VALUES (1, 1, 'long', 'ref1', 7)",
+            [(), ()],
+        )
+
+    with caplog.at_level(logging.WARNING, logger="trade_ledger.db"):
+        db.init_db(path)
+
+    with db.engine.begin() as conn:
+        indexes = {row[1] for row in conn.exec_driver_sql("PRAGMA index_list(trades)")}
+    assert "uq_trades_bot_ref" not in indexes
+    assert "uq_trades_bot_ref" in caplog.text

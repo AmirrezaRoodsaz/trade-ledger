@@ -213,16 +213,17 @@ class BotClient:
         risk_eur: Decimal,
         qty: Decimal,
         reason: str,
+        external_ref: str | None = None,
     ) -> dict:
         """Journal the intent *before* the order exists. The returned trade's
         `external_ref` is the client order id the order must carry, so a fill
         can always be traced back to the plan that authorised it.
 
         Sent once, never retried (see the module docstring): a duplicate
-        planned trade would authorise a second order for one signal.
-        # ponytail: no pre-flight "does this ref already exist" GET, because
-        # `/api/trades` has no `external_ref` filter to ask with. Add one
-        # here if the app ever grows that query param.
+        planned trade would authorise a second order for one signal. The
+        caller may pass a `external_ref` it derived itself (the runner uses
+        one per symbol and bar) and check `find_trade` first, which is what
+        makes a re-run of the same bar reuse the plan instead of doubling it.
         """
         return self._request(
             "POST",
@@ -236,7 +237,7 @@ class BotClient:
                 "risk_eur": risk_eur,
                 "planned_qty": qty,
                 "note_pre": reason,
-                "external_ref": self._client_ref(),
+                "external_ref": external_ref or self._client_ref(),
             },
         )
 
@@ -252,6 +253,35 @@ class BotClient:
 
     def close_trade(self, trade_id: int, *, ts, quantity, price, fee_eur) -> dict:
         return self._fill(trade_id, "close", ts, quantity, price, fee_eur)
+
+    def instruments(self) -> list[dict]:
+        """Every instrument the app knows, for mapping a trade's
+        `instrument_id` back to its symbol during reconciliation.
+        """
+        return self._request("GET", "/api/instruments")
+
+    def find_trade(self, external_ref: str) -> dict | None:
+        """The bot's own trade carrying `external_ref`, or `None`.
+
+        The intent step asks this before planning, so a re-run of the same
+        bar reuses the plan it already filed instead of authorising a second
+        order for one signal.
+        """
+        page = self._request(
+            "GET",
+            "/api/trades",
+            params={"mode": "all", "external_ref": external_ref, "page_size": 2},
+        )
+        items = page["items"]
+        return items[0] if items else None
+
+    def cancel_trade(self, trade_id: int) -> dict:
+        """A plan that never became a position — the runner uses it when the
+        venue refuses the stop and the entry is closed again. Cancelling
+        releases the plan's `external_ref` from the "already filed" check, so
+        a re-run of the same bar does not re-enter on it.
+        """
+        return self._request("POST", f"/api/trades/{trade_id}/cancel")
 
     def open_trades(self) -> list[dict]:
         """Open trades on the bot's account — the journal side of
