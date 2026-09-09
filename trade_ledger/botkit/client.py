@@ -275,6 +275,14 @@ class BotClient:
         items = page["items"]
         return items[0] if items else None
 
+    def cancel_trade(self, trade_id: int) -> dict:
+        """A plan that never became a position — the runner uses it when the
+        venue refuses the stop and the entry is closed again. Cancelling
+        releases the plan's `external_ref` from the "already filed" check, so
+        a re-run of the same bar does not re-enter on it.
+        """
+        return self._request("POST", f"/api/trades/{trade_id}/cancel")
+
     def open_trades(self) -> list[dict]:
         """Open trades on the bot's account — the journal side of
         reconciliation. `mode=all` because the account decides the mode; the

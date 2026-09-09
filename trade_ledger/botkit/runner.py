@@ -580,8 +580,15 @@ def _enter(
     ref = intent_ref(bot["slug"], symbol, candles[-1].date)
     trade = client.find_trade(ref)
     if trade is not None and trade["status"] != "planned":
+        # Filled on an earlier run, or cancelled behind a refused stop. Either
+        # way this bar's entry is settled and must not be sent again.
         events.append(
-            _event("info", f"entry already executed on {symbol}", trade_id=trade["id"], ref=ref)
+            _event(
+                "info",
+                f"entry already settled on {symbol} ({trade['status']})",
+                trade_id=trade["id"],
+                ref=ref,
+            )
         )
         return
     if trade is None:
@@ -614,12 +621,10 @@ def _enter(
     # The stop goes on before the journal entry: the position is live from
     # the moment the order returns, and an unprotected position is the one
     # thing this bot may never leave behind. If the stop cannot be placed,
-    # the position is closed again rather than left naked, and nothing is
-    # journalled — the plan stays `planned`, the events say what happened.
-    # ponytail: that plan keeps its ref, so a re-run inside the same bar
-    # would try the entry again. Cancel it through `/api/trades/{id}/cancel`
-    # once the client speaks that route; until then the 4-hour bar is the
-    # only thing between this and a retry loop.
+    # the position is closed again rather than left naked, and the plan is
+    # cancelled — nothing was held, so nothing is journalled as a trade, and
+    # the cancelled plan stops a re-run inside the same bar from computing
+    # the same ref and entering all over again.
     try:
         stop = exchange.place_stop(symbol, "sell", filled, stop_price, trade["external_ref"])
     except Exception as exc:  # noqa: BLE001 - any refusal leaves the position naked
@@ -627,6 +632,10 @@ def _enter(
         summary["skipped"].append(f"{symbol}: stop rejected, position closed again")
         closed = exchange.close_position(symbol)
         events.append(_event("order", f"closed unprotected {symbol}", **_order_payload(closed)))
+        # Best effort: the position is already flat, and a plan left `planned`
+        # is a smaller problem than a second entry — but only just, so it is
+        # logged loudly rather than swallowed.
+        _safe("cancel the plan behind a refused stop", client.cancel_trade, trade["id"])
         return
     events.append(_event("order", f"stop {symbol}", **_order_payload(stop)))
 

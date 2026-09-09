@@ -434,10 +434,20 @@ def test_a_refused_stop_closes_the_position_instead_of_leaving_it_naked(
 
     assert [w[0] for w in exchange.writes] == ["place_order", "place_stop", "close_position"]
     assert summary["skipped"] == ["BTC/EUR: stop rejected, position closed again"]
-    # Nothing is journalled: the plan stays a plan, and the run still finishes.
-    assert session.query(Trade).one().status == "planned"
+    # The plan is cancelled, not left standing: nothing was held, and a plan
+    # still `planned` would be re-entered on the next run of the same bar.
+    assert session.query(Trade).one().status == "cancelled"
     assert summary["status"] == "ok"
     assert json.loads(_state(session, bot).positions_json) == []
+
+    # ...which is exactly what the second run must not do.
+    exchange.stop_error = None
+    exchange.writes.clear()
+    second = run_once(_bot_client(client, token, bot.slug), exchange, now=NOW)
+
+    assert exchange.writes == []
+    assert second["entries"] == 0
+    assert session.query(Trade).count() == 1
 
 
 def test_a_failure_after_an_order_still_pushes_what_the_venue_now_holds(

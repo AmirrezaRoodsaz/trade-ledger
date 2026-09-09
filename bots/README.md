@@ -116,8 +116,9 @@ that endpoint must be TLS — the bot token travels on every request.
 - **No position without a stop.** The stop is placed immediately after the
   entry fill, before the journal is even updated, and `stop_present` on the
   pushed state is what kill rule K4 watches. If the venue refuses the stop,
-  the position is closed again on the spot and nothing is journalled — the bot
-  would rather be flat than unprotected.
+  the position is closed again on the spot and the plan is cancelled — the bot
+  would rather be flat than unprotected, and a cancelled plan is what stops the
+  next run of the same bar from entering all over again.
 
 ## Sizing, and what it currently assumes
 
