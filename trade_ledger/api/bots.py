@@ -6,19 +6,22 @@ on rotate. `BotOut` never carries `token_hash`.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import field_validator
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
+from pydantic import Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..bots import monitor
 from ..bots.auth import issue_token
 from ..db import get_session
-from ..enums import BotHost
-from ..models import Bot, BotRun, Trade
+from ..enums import BotHost, BotStatus, EventKind
+from ..models import Bot, BotEvent, BotRun, Trade
 from ..settings import _parse_env_file, get_settings
 from ._common import get_account_or_404, get_bot_or_404
 from .schemas import BaseModel, Money
@@ -104,9 +107,103 @@ class TokenOut(BaseModel):
     token: str
 
 
-@router.get("/bots", response_model=list[BotOut])
+# --- health and history reads -----------------------------------------------
+
+
+class KillRuleOut(BaseModel):
+    rule: str
+    status: str
+    value: str | None
+    threshold: str | None
+    action: str
+    detail: str
+
+
+class HealthStateOut(BaseModel):
+    ts: datetime
+    equity_eur: Money | None
+    peak_equity_eur: Money | None
+    drawdown_pct: Money | None
+    reconciliation: str
+    reconciliation_detail: str | None
+    positions: list[dict]
+    positions_count: int
+    positions_without_stop: int
+    config_version: int | None
+
+
+class HealthRunOut(BaseModel):
+    id: int
+    started: datetime
+    finished: datetime | None
+    status: str
+    error: str | None
+
+
+class HealthOut(BaseModel):
+    status: BotStatus
+    kill_rules: list[KillRuleOut]
+    last_heartbeat: datetime | None
+    next_run: datetime
+    deadline: datetime
+    last_run: HealthRunOut | None
+    state: HealthStateOut | None
+    stage_capital_eur: Money
+
+
+class BotListItem(BotOut):
+    """`BotOut` plus what the fleet page shows without opening a bot."""
+
+    next_run: datetime | None = None
+    equity_eur: Money | None = None
+    drawdown_pct: Money | None = None
+    positions_count: int = 0
+    positions_without_stop: int = 0
+    kill_summary: dict[str, str] = Field(default_factory=dict)
+
+
+class RunOut(BaseModel):
+    id: int
+    bot_id: int
+    started: datetime
+    finished: datetime | None
+    status: str
+    summary: dict
+    error: str | None
+    has_log: bool
+
+
+class EventOut(BaseModel):
+    id: int
+    bot_id: int
+    ts: datetime
+    kind: str
+    message: str
+    payload: dict
+
+
+@router.get("/bots", response_model=list[BotListItem])
 def list_bots(session: Session = Depends(get_session)):
-    return session.execute(select(Bot).order_by(Bot.id)).scalars().all()
+    """The fleet with a freshly derived status and the kill-rule summary.
+
+    ponytail: one health computation per bot rather than a single joined
+    query. A fleet is a handful of rows; revisit if that ever stops being
+    true.
+    """
+    items = []
+    for bot in session.execute(select(Bot).order_by(Bot.id)).scalars().all():
+        report = monitor.health(session, bot)
+        state = report["state"] or {}
+        item = BotListItem.model_validate(bot)
+        item.status = report["status"]
+        item.next_run = report["next_run"]
+        item.equity_eur = state.get("equity_eur")
+        item.drawdown_pct = state.get("drawdown_pct")
+        item.positions_count = state.get("positions_count", 0)
+        item.positions_without_stop = state.get("positions_without_stop", 0)
+        item.kill_summary = {rule["rule"]: rule["status"] for rule in report["kill_rules"]}
+        items.append(item)
+    return items
 
 
 @router.post("/bots", response_model=BotCreated, status_code=201)
@@ -177,3 +274,82 @@ def get_bot_env_status(slug: str, session: Session = Depends(get_session)):
 
 def env_path(slug: str) -> Path:
     return Path(get_settings().DATA_DIR) / "bots" / slug / ".env"
+
+
+@router.get("/bots/{slug}/health", response_model=HealthOut)
+def get_bot_health(slug: str, session: Session = Depends(get_session)):
+    """The app's own verdict, computed fresh. A read: it raises no alert and
+    queues no command, so polling this from the UI changes nothing.
+    """
+    return monitor.health(session, get_bot_or_404(session, slug))
+
+
+@router.get("/bots/{slug}/runs", response_model=list[RunOut])
+def list_bot_runs(
+    slug: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    session: Session = Depends(get_session),
+):
+    """Newest first."""
+    bot = get_bot_or_404(session, slug)
+    runs = (
+        session.execute(
+            select(BotRun).where(BotRun.bot_id == bot.id).order_by(BotRun.id.desc()).limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        RunOut(
+            id=run.id,
+            bot_id=run.bot_id,
+            started=run.started,
+            finished=run.finished,
+            status=run.status,
+            summary=json.loads(run.summary_json or "{}"),
+            error=run.error,
+            has_log=bool(run.log_path),
+        )
+        for run in runs
+    ]
+
+
+@router.get("/bots/{slug}/runs/{run_id}/log", response_class=PlainTextResponse)
+def get_bot_run_log(slug: str, run_id: int, session: Session = Depends(get_session)):
+    """The captured stdout of one run, as text."""
+    bot = get_bot_or_404(session, slug)
+    run = session.get(BotRun, run_id)
+    if run is None or run.bot_id != bot.id:
+        raise HTTPException(status_code=404, detail="run not found")
+    # ponytail: the stored path is trusted because only `bot_push.finish_run`
+    # writes it, and it builds the path from DATA_DIR and the run id.
+    if not run.log_path or not Path(run.log_path).is_file():
+        raise HTTPException(status_code=404, detail="no log for this run")
+    return PlainTextResponse(Path(run.log_path).read_text())
+
+
+@router.get("/bots/{slug}/events", response_model=list[EventOut])
+def list_bot_events(
+    slug: str,
+    kind: EventKind | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    session: Session = Depends(get_session),
+):
+    """Newest first, optionally one kind only."""
+    bot = get_bot_or_404(session, slug)
+    stmt = (
+        select(BotEvent).where(BotEvent.bot_id == bot.id).order_by(BotEvent.id.desc()).limit(limit)
+    )
+    if kind is not None:
+        stmt = stmt.where(BotEvent.kind == kind)
+    return [
+        EventOut(
+            id=event.id,
+            bot_id=event.bot_id,
+            ts=event.ts,
+            kind=event.kind,
+            message=event.message,
+            payload=json.loads(event.payload_json or "{}"),
+        )
+        for event in session.execute(stmt).scalars().all()
+    ]

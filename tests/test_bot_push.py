@@ -8,6 +8,7 @@ import pytest
 
 from trade_ledger.enums import CommandKind, EventKind, Mode, RunStatus, TradeStatus
 from trade_ledger.models import (
+    Alert,
     BotCommand,
     BotEvent,
     BotRun,
@@ -196,6 +197,29 @@ def test_a_reconciliation_mismatch_emits_an_event(client, session, bot_factory):
     events = _events(session, bot, EventKind.RECONCILE)
     assert [e.message for e in events] == ["BTC 0.01 vs 0.02"]
     assert json.loads(events[0].payload_json) == {"reconciliation": "mismatch"}
+
+
+def test_pushing_state_re_evaluates_the_kill_rules_at_once(client, session, bot_factory):
+    """Spec section 3: fresh state is when K1 and K4 can change their minds,
+    so the push itself triggers the evaluation rather than the 60-second tick.
+    """
+    bot, token = bot_factory()
+    resp = client.post(
+        f"/api/bots/{bot.slug}/state",
+        json={
+            "equity_eur": "1900",
+            "positions": [{"symbol": "BTC/USDT:USDT", "stop_present": False}],
+            "reconciliation": "ok",
+        },
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+
+    kinds = {one.kind for one in session.query(Alert).all() if one.bot_id == bot.id}
+    assert kinds == {"kill_k1", "kill_k4"}
+    queued = {one.kind for one in session.query(BotCommand).all() if one.bot_id == bot.id}
+    assert queued == {CommandKind.PAUSE, CommandKind.FLAT}
+    assert bot.status == "ok"
 
 
 def test_more_than_500_events_in_one_call_is_413(client, session, bot_factory):
