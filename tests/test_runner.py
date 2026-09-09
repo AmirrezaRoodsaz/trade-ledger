@@ -434,6 +434,9 @@ def test_a_refused_stop_closes_the_position_instead_of_leaving_it_naked(
 
     assert [w[0] for w in exchange.writes] == ["place_order", "place_stop", "close_position"]
     assert summary["skipped"] == ["BTC/EUR: stop rejected, position closed again"]
+    # Not counted as an entry: the position was closed again, and a run that
+    # reports one reads like a position that is open.
+    assert summary["entries"] == 0
     # The plan is cancelled, not left standing: nothing was held, and a plan
     # still `planned` would be re-entered on the next run of the same bar.
     assert session.query(Trade).one().status == "cancelled"

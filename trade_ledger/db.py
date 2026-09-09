@@ -7,17 +7,20 @@ fixture) before using `SessionLocal` or the `get_session()` dependency.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import String, create_engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
 
 from .settings import get_settings
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "2"
 
@@ -128,17 +131,20 @@ def _migrate(engine) -> None:
         if "bot_id" not in columns:
             conn.exec_driver_sql("ALTER TABLE trades ADD COLUMN bot_id INTEGER")
         # The same guarantee `Trade.__table_args__` gives a fresh database:
-        # one journal ref per bot. A file that already holds duplicates keeps
-        # working without the index — refusing to open the database over a
+        # one journal ref per bot. A file that already holds a duplicate keeps
+        # working *without* the index — refusing to open the database over a
         # historical duplicate would be worse than the convention it enforces.
+        # `DatabaseError` covers both refusals: SQLite raises `IntegrityError`
+        # when existing rows collide and `OperationalError` when the table
+        # cannot take the index at all.
         if "external_ref" in columns:
             try:
                 conn.exec_driver_sql(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_bot_ref "
                     "ON trades (bot_id, external_ref)"
                 )
-            except OperationalError:
-                pass
+            except DatabaseError as exc:
+                log.warning("uq_trades_bot_ref not created on this database: %s", exc)
 
 
 def get_session():

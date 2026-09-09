@@ -73,8 +73,8 @@ def _stderr(message: str) -> None:
 
 
 def _safe(what: str, fn, *args, **kwargs):
-    """A call made *after* an order was sent. The venue already has the
-    position; losing the journal entry is bad but re-sending the order is
+    """A call made *after* the venue was touched. The exchange already has
+    the position; losing the journal entry is bad but re-sending the order is
     worse, so **any** failure here is logged and the run carries on. A 409
     from a lifecycle guard is as unrecoverable as an unreachable app, and
     neither is a reason to touch the venue again.
@@ -82,7 +82,7 @@ def _safe(what: str, fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - deliberately everything; see the docstring
-        _stderr(f"{what} failed after the order was sent: {type(exc).__name__}: {exc}")
+        _stderr(f"journal call failed; not retried ({what}): {type(exc).__name__}: {exc}")
         return None
 
 
@@ -607,8 +607,8 @@ def _enter(
             external_ref=ref,
         )
 
-    summary["entries"] += 1
     if dry_run:
+        summary["entries"] += 1
         events.append(_event("info", f"would enter {qty} {symbol}", trade_id=trade["id"], ref=ref))
         return
 
@@ -638,6 +638,9 @@ def _enter(
         _safe("cancel the plan behind a refused stop", client.cancel_trade, trade["id"])
         return
     events.append(_event("order", f"stop {symbol}", **_order_payload(stop)))
+    # Counted only now: an entry whose stop was refused was closed again, and
+    # a run that reports it as an entry reads like a position that is open.
+    summary["entries"] += 1
 
     _safe(
         "open trade",
