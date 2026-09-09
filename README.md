@@ -256,11 +256,15 @@ the token and the exchange keys, so neither is ever on a command line.
   a bot process. `tests/test_exchange_isolation.py` imports `trade_ledger.main`
   and asserts that module is not in `sys.modules`, so the boundary fails the
   build rather than drifting.
-- **Bot keys never reach the app.** Each bot has its own env file under
-  `data/bots/<slug>/.env` (`chmod 600`, `data/` is gitignored) or
-  `/etc/trade-bot/<slug>.env` on a VPS. The supervisor passes the file to the
-  child process without reading it; the API reports only *whether* each key is
-  set.
+- **The app never trades with a bot's keys.** Each bot has its own env file
+  under `data/bots/<slug>/.env` (`chmod 600`, `data/` is gitignored) or
+  `/etc/trade-bot/<slug>.env` on a VPS. To start a local bot the supervisor does
+  parse that file — it has to, to build the child process's environment — but
+  the values go straight into the subprocess and nowhere else: never logged,
+  never written to the database, never returned by an API (the env-status route
+  reports only *whether* each key is set), and never used by the app process to
+  reach an exchange, since it cannot import the module that would
+  (`tests/test_exchange_isolation.py`, above).
 - **`.env` is never committed.** It is gitignored, and so are `data/`,
   `exports/`, `screenshots/`, `notes_out/`, `*.db`, `frontend/dist/` and
   `node_modules/`. Secrets are read from the environment first and from `.env`
