@@ -199,6 +199,8 @@ Money is `Decimal` end to end in the backend and formatted `de-DE` in the UI
 (`1.234,56 €`, `06.09.2026`). `docs/design.md` has the tables, the sign
 conventions and how the tax engine routes a transaction.
 
+**New here?** Read [`docs/user-guide.pdf`](docs/user-guide.pdf) — a 12-page walkthrough of every page, the Journal flow, Steuer, the Bot Center and a weekly routine.
+
 ## Quick start
 
 Requires Python 3.13+ with [uv](https://docs.astral.sh/uv/) and Node 22+.
