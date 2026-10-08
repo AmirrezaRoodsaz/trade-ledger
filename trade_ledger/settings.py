@@ -84,3 +84,11 @@ def env_values(path: Path | None = None) -> dict[str, str]:
     own not leaking them further.
     """
     return _parse_env_file(path or _ENV_FILE)
+
+
+def local_app_url() -> str:
+    """Where a process on this machine reaches the app. A wildcard bind
+    (0.0.0.0 / ::) is not a destination, so it becomes loopback."""
+    settings = get_settings()
+    host = "127.0.0.1" if settings.HOST in ("0.0.0.0", "::", "") else settings.HOST
+    return f"http://{host}:{settings.PORT}"

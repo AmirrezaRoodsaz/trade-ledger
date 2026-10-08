@@ -31,7 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from ..prices.service import Candle
-from ..settings import env_values, get_settings
+from ..settings import env_values, get_settings, local_app_url
 from .client import AppUnreachable, BotClient
 from .runner import ReconciliationError, run_once
 
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     # port lives in `settings.py` and a bot that guesses it wrong reaches
     # nothing at all.
     settings = get_settings()
-    url = os.environ.get("TRADE_LEDGER_URL") or f"http://{settings.HOST}:{settings.PORT}"
+    url = os.environ.get("TRADE_LEDGER_URL") or local_app_url()
     client = BotClient(url, token, args.bot)
     exchange = build_exchange()
     try:

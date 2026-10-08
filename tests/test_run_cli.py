@@ -113,7 +113,9 @@ def test_the_default_url_is_the_apps_own_host_and_port(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_module, "run_once", fake_run_once)
     assert run_module.main(["--bot", "smoke", "--dry-run"]) == 0
-    assert seen["base"].startswith("http://127.0.0.1:8642")
+    from trade_ledger.settings import local_app_url
+
+    assert seen["base"].startswith(local_app_url())
 
     # A different port for the app is a different port for its bots.
     monkeypatch.setenv("PORT", "8799")

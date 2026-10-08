@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session, object_session
 from .. import db
 from ..enums import AlertSeverity, BotHost, CommandKind, EventKind
 from ..models import Bot, BotCommand, BotEvent, BotRun
-from ..settings import env_values, get_settings
+from ..settings import env_values, get_settings, local_app_url
 from . import commands
 from .alerts import raise_alert
 from .schedule import next_run
@@ -222,7 +222,7 @@ def launch(
     # An override, not a default: a child of *this* app talks to *this* app.
     # A stale URL in the bot's env file (the template's, say) would otherwise
     # send the bot at a port nothing is listening on.
-    env["TRADE_LEDGER_URL"] = APP_URL or f"http://{settings.HOST}:{settings.PORT}"
+    env["TRADE_LEDGER_URL"] = APP_URL or local_app_url()
 
     argv = [sys.executable, "-m", "trade_ledger.botkit.run", "--bot", bot.slug, "--once"]
     if bot.dry_run if dry_run is None else dry_run:

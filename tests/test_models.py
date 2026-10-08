@@ -198,3 +198,13 @@ def test_a_database_with_a_duplicate_journal_ref_still_opens(tmp_path, caplog):
         indexes = {row[1] for row in conn.exec_driver_sql("PRAGMA index_list(trades)")}
     assert "uq_trades_bot_ref" not in indexes
     assert "uq_trades_bot_ref" in caplog.text
+
+
+def test_local_app_url_maps_a_wildcard_bind_to_loopback(monkeypatch):
+    from trade_ledger import settings as settings_module
+    from trade_ledger.settings import local_app_url
+
+    monkeypatch.setattr(settings_module, "get_settings", lambda: type("S", (), {"HOST": "0.0.0.0", "PORT": 8650})())
+    assert local_app_url() == "http://127.0.0.1:8650"
+    monkeypatch.setattr(settings_module, "get_settings", lambda: type("S", (), {"HOST": "192.168.0.5", "PORT": 8642})())
+    assert local_app_url() == "http://192.168.0.5:8642"

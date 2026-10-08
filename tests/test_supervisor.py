@@ -182,7 +182,9 @@ def test_launch_overrides_the_url_with_the_port_the_app_was_started_on(
     popen = FakePopen()
 
     supervisor.launch(session, bot, now=NOW, popen=popen)
-    assert popen.calls[0]["env"]["TRADE_LEDGER_URL"] == "http://127.0.0.1:8642"
+    from trade_ledger.settings import local_app_url
+
+    assert popen.calls[0]["env"]["TRADE_LEDGER_URL"] == local_app_url()
 
     monkeypatch.setattr(supervisor, "APP_URL", "http://127.0.0.1:8799")
     supervisor.reset()
