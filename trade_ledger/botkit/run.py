@@ -200,7 +200,6 @@ def main(argv: list[str] | None = None) -> int:
     # The app's own HOST/PORT, not a second hard-coded number: the default
     # port lives in `settings.py` and a bot that guesses it wrong reaches
     # nothing at all.
-    settings = get_settings()
     url = os.environ.get("TRADE_LEDGER_URL") or local_app_url()
     client = BotClient(url, token, args.bot)
     exchange = build_exchange()

@@ -217,7 +217,6 @@ def launch(
         session.commit()
         return None
 
-    settings = get_settings()
     env = {**os.environ, **env_values(env_file)}
     # An override, not a default: a child of *this* app talks to *this* app.
     # A stale URL in the bot's env file (the template's, say) would otherwise
